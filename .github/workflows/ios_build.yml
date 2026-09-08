@@ -23,11 +23,6 @@ jobs:
           cd client
           flutter pub get
 
-      - name: Install Pods
-        run: |
-          cd client/ios
-          pod install --repo-update
-
       - name: Build iOS Application (No Code Sign)
         run: |
           cd client
