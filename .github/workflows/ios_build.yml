@@ -18,6 +18,9 @@ jobs:
           channel: 'stable'
           cache: true
 
+      - name: Disable Swift Package Manager (Use stable CocoaPods)
+        run: flutter config --no-enable-swift-package-manager
+
       - name: Flutter Dependencies
         run: |
           cd client
