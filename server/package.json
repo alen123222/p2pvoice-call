@@ -1,0 +1,12 @@
+{
+  "name": "p2p-signaling-server",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight WebRTC P2P Signaling Server",
+  "main": "signaling.js",
+  "scripts": {
+    "start": "node signaling.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

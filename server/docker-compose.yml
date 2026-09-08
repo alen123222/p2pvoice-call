@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  # 1. P2P 信令服务器 (处理握手、呼叫与 ICE 交换，不走音频)
+  signaling:
+    build: .
+    container_name: p2p-signaling
+    restart: always
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+
+  # 2. 纯 STUN 服务器 (帮助手机穿透 NAT 探测公网 IP，严禁中转任何媒体)
+  stun:
+    image: coturn/coturn:latest
+    container_name: p2p-stun
+    restart: always
+    network_mode: "host" # STUN requires host networking to see real client IPs
+    volumes:
+      - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
+    command: ["-c", "/etc/coturn/turnserver.conf"]

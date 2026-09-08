@@ -1,0 +1,26 @@
+# Large binaries
+*.apk
+*.aab
+
+# Node.js
+**/node_modules/
+npm-debug.log*
+
+# Flutter / Dart
+**/.dart_tool/
+**/build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Android / Gradle
+**/.gradle/
+**/local.properties
+**/GeneratedPluginRegistrant.java
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# Logs
+*.log
