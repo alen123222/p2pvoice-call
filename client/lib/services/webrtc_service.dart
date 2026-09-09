@@ -1,23 +1,34 @@
 import 'dart:async';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:permission_handler/permission_handler.dart';
 import '../models/call_state.dart';
 import 'signaling_service.dart';
+
+/// Thrown when the microphone permission is not granted.
+class _MicPermissionException implements Exception {
+  const _MicPermissionException();
+}
 
 class WebRTCService {
   final SignalingService signalingService;
 
   RTCPeerConnection? _peerConnection;
   MediaStream? _localStream;
-  MediaStream? _remoteStream;
 
   String? _currentPeerId;
   bool _isCaller = false;
   bool _isMuted = false;
   bool _isSpeakerphoneOn = false;
 
+  CallStatus _callStatus = CallStatus.idle;
+
   // ICE Candidates queue to prevent premature candidate dropping
   final List<RTCIceCandidate> _pendingRemoteCandidates = [];
   bool _isRemoteDescriptionSet = false;
+
+  // Serializes cleanup so a rapid hangup + redial cannot race.
+  Future<void> _cleanupFuture = Future.value();
+  Timer? _ringTimer;
 
   final StreamController<CallStatus> _callStatusController =
       StreamController<CallStatus>.broadcast();
@@ -33,15 +44,23 @@ class WebRTCService {
   String _connectionType = 'Unknown';
   String get connectionType => _connectionType;
 
-  // STUN & TURN Configuration
+  /// UI feedback callbacks. The argument is a localization key resolved by the
+  /// UI layer, so this service stays free of BuildContext / l10n deps.
+  Function(String key)? onError;
+  Function(String key)? onNotice;
+
+  // STUN servers require no secret. The user-configured server is prepended.
   List<String> stunServers = [
     'stun:170.106.195.109:3478',
     'stun:stun.l.google.com:19302',
   ];
 
-  String turnServer = '170.106.195.109:3478';
-  String turnUsername = 'p2puser';
-  String turnPassword = 'p2psecret2026';
+  // TURN credentials are fetched from the signaling server (TURN REST API) so
+  // no shared secret is embedded in the client binary.
+  Map<String, dynamic>? _turnConfig;
+
+  String _remotePeerAvatar = 'pilot';
+  String get remotePeerAvatar => _remotePeerAvatar;
 
   WebRTCService({required this.signalingService}) {
     _bindSignalingEvents();
@@ -51,44 +70,63 @@ class WebRTCService {
   bool get isSpeakerphoneOn => _isSpeakerphoneOn;
   String? get currentPeerId => _currentPeerId;
   bool get isCaller => _isCaller;
-  MediaStream? get remoteStream => _remoteStream;
 
   void updateStunServer(String stunAddress) {
     final cleaned = stunAddress.trim();
-    if (cleaned.isNotEmpty) {
-      final formatted = cleaned.startsWith('stun:') ? cleaned : 'stun:$cleaned';
-      if (!stunServers.contains(formatted)) {
-        stunServers.insert(0, formatted);
-      }
+    if (cleaned.isEmpty) return;
+    final formatted = cleaned.startsWith('stun:') ? cleaned : 'stun:$cleaned';
+    if (!stunServers.contains(formatted)) {
+      stunServers.insert(0, formatted);
     }
   }
-
-  String _remotePeerAvatar = 'pilot';
-  String get remotePeerAvatar => _remotePeerAvatar;
 
   void setRemotePeerAvatar(String avatar) {
     _remotePeerAvatar = avatar;
   }
 
+  void _setCallStatus(CallStatus status) {
+    _callStatus = status;
+    _callStatusController.add(status);
+  }
+
   void _bindSignalingEvents() {
+    signalingService.onTurnConfig = (config) {
+      if (config != null && config.isNotEmpty && config['username'] != null) {
+        _turnConfig = config;
+      } else {
+        _turnConfig = null;
+      }
+    };
+
     signalingService.onCallRequest = (from, avatar, payload) {
+      // Auto-decline when already busy in another call.
+      if (_callStatus == CallStatus.calling ||
+          _callStatus == CallStatus.connected ||
+          _callStatus == CallStatus.incoming) {
+        signalingService.sendCallReject(from);
+        return;
+      }
       _currentPeerId = from;
       _remotePeerAvatar = avatar;
       _isCaller = false;
-      _callStatusController.add(CallStatus.incoming);
+      _setCallStatus(CallStatus.incoming);
     };
 
     signalingService.onCallAccepted = (from) async {
-      if (_currentPeerId == from && _isCaller) {
-        // Callee accepted call, create WebRTC Offer
+      if (_currentPeerId == from &&
+          _isCaller &&
+          _callStatus == CallStatus.calling) {
+        _armRingTimer(); // reset timeout while connecting
         await _createAndSendOffer(from);
       }
     };
 
     signalingService.onCallRejected = (from) {
       if (_currentPeerId == from) {
+        _cancelRingTimer();
         _cleanupCall();
-        _callStatusController.add(CallStatus.idle);
+        onNotice?.call('callRejected');
+        _setCallStatus(CallStatus.idle);
       }
     };
 
@@ -110,109 +148,153 @@ class WebRTCService {
       }
     };
 
-    signalingService.onHangupReceived = (from) {
+    signalingService.onHangupReceived = (from) async {
       if (_currentPeerId == from) {
-        _cleanupCall();
-        _callStatusController.add(CallStatus.ended);
+        _cancelRingTimer();
+        await _cleanupCall();
+        onNotice?.call('peerHangup');
+        _setCallStatus(CallStatus.ended);
       }
     };
 
-    signalingService.onUserOffline = (target) {
+    signalingService.onUserOffline = (target, message) async {
       if (_currentPeerId == target) {
-        _cleanupCall();
-        _callStatusController.add(CallStatus.ended);
+        _cancelRingTimer();
+        await _cleanupCall();
+        onNotice?.call('peerOffline');
+        _setCallStatus(CallStatus.ended);
       }
     };
   }
 
   Map<String, dynamic> _createIceServersConfig() {
     final List<Map<String, dynamic>> iceServers = [
-      {
-        'urls': stunServers,
-      },
+      {'urls': stunServers},
     ];
 
-    // Add private TURN relay fallback (End-to-End Encrypted via DTLS-SRTP)
-    if (turnServer.isNotEmpty) {
+    final turn = _turnConfig;
+    if (turn != null &&
+        turn['username'] != null &&
+        turn['credential'] != null &&
+        turn['uris'] is List) {
       iceServers.add({
-        'urls': [
-          'turn:$turnServer?transport=udp',
-          'turn:$turnServer?transport=tcp',
-        ],
-        'username': turnUsername,
-        'credential': turnPassword,
+        'urls': (turn['uris'] as List).cast<String>(),
+        'username': turn['username'],
+        'credential': turn['credential'],
       });
     }
 
     return {
       'iceServers': iceServers,
       'sdpSemantics': 'unified-plan',
-      'iceTransportPolicy': 'all', // Tests all candidates: host (IPv6/LAN), srflx (STUN), relay (TURN)
+      'iceTransportPolicy': 'all',
       'bundlePolicy': 'max-bundle',
       'rtcpMuxPolicy': 'require',
     };
   }
 
   Future<void> startCall(String targetUserId) async {
+    if (!signalingService.isConnected) {
+      onError?.call('notConnected');
+      return;
+    }
     _currentPeerId = targetUserId;
     _isCaller = true;
-    _callStatusController.add(CallStatus.calling);
-
-    // Send call request to callee
+    _setCallStatus(CallStatus.calling);
+    _armRingTimer();
     signalingService.sendCallRequest(targetUserId);
   }
 
   Future<void> acceptCall() async {
     if (_currentPeerId == null) return;
-    _callStatusController.add(CallStatus.calling);
+    _setCallStatus(CallStatus.calling);
     signalingService.sendCallAccept(_currentPeerId!);
   }
 
-  void rejectCall() {
+  Future<void> rejectCall() async {
     if (_currentPeerId != null) {
       signalingService.sendCallReject(_currentPeerId!);
-      _cleanupCall();
-      _callStatusController.add(CallStatus.idle);
     }
+    _cancelRingTimer();
+    await _cleanupCall();
+    _setCallStatus(CallStatus.idle);
+  }
+
+  void _armRingTimer() {
+    _cancelRingTimer();
+    _ringTimer = Timer(const Duration(seconds: 45), () {
+      if (_callStatus == CallStatus.calling) {
+        if (_currentPeerId != null) {
+          signalingService.sendHangup(_currentPeerId!);
+        }
+        _cleanupCall();
+        onNotice?.call('noAnswer');
+        _setCallStatus(CallStatus.idle);
+      }
+    });
+  }
+
+  void _cancelRingTimer() {
+    _ringTimer?.cancel();
+    _ringTimer = null;
   }
 
   Future<void> _createAndSendOffer(String targetUserId) async {
-    await _initPeerConnection();
-
-    final RTCSessionDescription offer = await _peerConnection!.createOffer({
-      'offerToReceiveAudio': 1,
-      'offerToReceiveVideo': 0,
-    });
-    await _peerConnection!.setLocalDescription(offer);
-
-    signalingService.sendOffer(targetUserId, offer.sdp ?? '');
+    try {
+      await _initPeerConnection();
+      final RTCSessionDescription offer = await _peerConnection!.createOffer({
+        'offerToReceiveAudio': 1,
+        'offerToReceiveVideo': 0,
+      });
+      await _peerConnection!.setLocalDescription(offer);
+      signalingService.sendOffer(targetUserId, offer.sdp ?? '');
+    } catch (e) {
+      _handleCallFailure(e);
+    }
   }
 
   Future<void> _handleRemoteOffer(String from, String sdp) async {
-    await _initPeerConnection();
+    try {
+      await _initPeerConnection();
+      final description = RTCSessionDescription(sdp, 'offer');
+      await _peerConnection!.setRemoteDescription(description);
+      await _drainPendingCandidates();
 
-    final description = RTCSessionDescription(sdp, 'offer');
-    await _peerConnection!.setRemoteDescription(description);
-
-    // Drain any candidates that arrived while initializing
-    await _drainPendingCandidates();
-
-    final RTCSessionDescription answer = await _peerConnection!.createAnswer({
-      'offerToReceiveAudio': 1,
-      'offerToReceiveVideo': 0,
-    });
-    await _peerConnection!.setLocalDescription(answer);
-
-    signalingService.sendAnswer(from, answer.sdp ?? '');
+      final RTCSessionDescription answer = await _peerConnection!.createAnswer({
+        'offerToReceiveAudio': 1,
+        'offerToReceiveVideo': 0,
+      });
+      await _peerConnection!.setLocalDescription(answer);
+      signalingService.sendAnswer(from, answer.sdp ?? '');
+    } catch (e) {
+      _handleCallFailure(e);
+    }
   }
 
   Future<void> _handleRemoteAnswer(String sdp) async {
-    if (_peerConnection == null) return;
-    final description = RTCSessionDescription(sdp, 'answer');
-    await _peerConnection!.setRemoteDescription(description);
+    try {
+      if (_peerConnection == null) return;
+      final description = RTCSessionDescription(sdp, 'answer');
+      await _peerConnection!.setRemoteDescription(description);
+      await _drainPendingCandidates();
+    } catch (e) {
+      _handleCallFailure(e);
+    }
+  }
 
-    // Drain any candidates that arrived while establishing
-    await _drainPendingCandidates();
+  void _handleCallFailure(Object e) {
+    print('[WebRTC] Call failure: $e');
+    _cancelRingTimer();
+    if (_currentPeerId != null) {
+      signalingService.sendHangup(_currentPeerId!);
+    }
+    _cleanupCall();
+    if (e is _MicPermissionException) {
+      onError?.call('micDenied');
+    } else {
+      onError?.call('callFailed');
+    }
+    _setCallStatus(CallStatus.idle);
   }
 
   Future<void> _handleRemoteCandidate(Map<String, dynamic> candidateMap) async {
@@ -230,7 +312,6 @@ class WebRTCService {
         await _peerConnection!.addCandidate(candidate);
       } catch (_) {}
     } else {
-      // Queue candidate until remote description is set to avoid rejection
       _pendingRemoteCandidates.add(candidate);
     }
   }
@@ -250,7 +331,12 @@ class WebRTCService {
   Future<void> _initPeerConnection() async {
     await _cleanupCall();
 
-    // 1. Capture local audio stream with Opus, Echo Cancellation, and Noise Suppression
+    final micStatus = await Permission.microphone.request();
+    if (!micStatus.isGranted) {
+      throw const _MicPermissionException();
+    }
+
+    // Capture local audio with Opus, echo cancellation and noise suppression.
     final Map<String, dynamic> mediaConstraints = {
       'audio': {
         'echoCancellation': true,
@@ -263,23 +349,16 @@ class WebRTCService {
 
     _localStream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
 
-    // 2. Create RTCPeerConnection
     final configuration = _createIceServersConfig();
     _peerConnection = await createPeerConnection(configuration);
 
-    // 3. Add local audio tracks
     _localStream!.getTracks().forEach((track) {
       _peerConnection!.addTrack(track, _localStream!);
     });
 
-    // 4. Handle remote audio stream
-    _peerConnection!.onTrack = (RTCTrackEvent event) {
-      if (event.track.kind == 'audio') {
-        _remoteStream = event.streams[0];
-      }
-    };
+    // flutter_webrtc plays remote audio tracks automatically.
+    _peerConnection!.onTrack = (RTCTrackEvent event) {};
 
-    // 5. ICE candidate gathering
     _peerConnection!.onIceCandidate = (RTCIceCandidate? candidate) {
       if (candidate != null &&
           candidate.candidate != null &&
@@ -293,7 +372,6 @@ class WebRTCService {
       }
     };
 
-    // 6. Monitor ICE Connection State & Active Candidate Pair
     _peerConnection!.onIceConnectionState = (RTCIceConnectionState state) {
       _currentIceState =
           state.toString().replaceAll('RTCIceConnectionState.', '');
@@ -303,7 +381,8 @@ class WebRTCService {
           state == RTCIceConnectionState.RTCIceConnectionStateCompleted) {
         _connectionType = 'P2P 直连已建立 (UDP/SRTP)';
         _detectConnectionType();
-        _callStatusController.add(CallStatus.connected);
+        _cancelRingTimer();
+        _setCallStatus(CallStatus.connected);
       } else if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
         _connectionType = '直连穿透打洞失败 (可检查网络或TURN中继)';
       } else if (state ==
@@ -346,7 +425,9 @@ class WebRTCService {
       final audioTracks = _localStream!.getAudioTracks();
       if (audioTracks.isNotEmpty) {
         _isMuted = !_isMuted;
-        audioTracks[0].enabled = !_isMuted;
+        for (final track in audioTracks) {
+          track.enabled = !_isMuted;
+        }
       }
     }
   }
@@ -356,15 +437,21 @@ class WebRTCService {
     await Helper.setSpeakerphoneOn(_isSpeakerphoneOn);
   }
 
-  void hangup() {
+  Future<void> hangup() async {
+    _cancelRingTimer();
     if (_currentPeerId != null) {
       signalingService.sendHangup(_currentPeerId!);
     }
-    _cleanupCall();
-    _callStatusController.add(CallStatus.idle);
+    await _cleanupCall();
+    _setCallStatus(CallStatus.idle);
   }
 
-  Future<void> _cleanupCall() async {
+  Future<void> _cleanupCall() {
+    _cleanupFuture = _cleanupFuture.then((_) => _doCleanup());
+    return _cleanupFuture;
+  }
+
+  Future<void> _doCleanup() async {
     _isRemoteDescriptionSet = false;
     _pendingRemoteCandidates.clear();
 
@@ -382,16 +469,15 @@ class WebRTCService {
     } catch (_) {}
     _peerConnection = null;
 
-    _remoteStream = null;
     _isMuted = false;
     _currentIceState = 'Idle';
     _connectionType = 'Unknown';
-    _isCaller = false;
   }
 
-  void dispose() {
-    _cleanupCall();
-    _callStatusController.close();
-    _iceStateController.close();
+  Future<void> dispose() async {
+    _cancelRingTimer();
+    await _cleanupCall();
+    await _callStatusController.close();
+    await _iceStateController.close();
   }
 }

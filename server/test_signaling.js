@@ -1,12 +1,33 @@
 const WebSocket = require('ws');
-
-// Start server in background for testing if not already running
 const { spawn } = require('child_process');
-const serverProc = spawn('node', ['signaling.js'], { cwd: __dirname, stdio: 'inherit' });
+
+// Use a random high port so the test never collides with a running instance.
+const PORT = 20000 + Math.floor(Math.random() * 20000);
+const URL = `ws://localhost:${PORT}`;
+
+const serverProc = spawn('node', ['signaling.js'], {
+  cwd: __dirname,
+  stdio: 'inherit',
+  env: { ...process.env, PORT: String(PORT) },
+});
+
+let finished = false;
+
+function cleanup(code) {
+  if (finished) return;
+  finished = true;
+  serverProc.kill();
+  process.exit(code);
+}
+
+const globalTimeout = setTimeout(() => {
+  console.error('[Test] TIMEOUT: Test failed');
+  cleanup(1);
+}, 8000);
 
 setTimeout(() => {
-  const ws1 = new WebSocket('ws://localhost:8080');
-  const ws2 = new WebSocket('ws://localhost:8080');
+  const ws1 = new WebSocket(URL);
+  const ws2 = new WebSocket(URL);
 
   let testPassed = false;
 
@@ -28,32 +49,35 @@ setTimeout(() => {
       testPassed = true;
       ws1.close();
       ws2.close();
-      serverProc.kill();
-      process.exit(0);
+      clearTimeout(globalTimeout);
+      cleanup(0);
     }
   });
 
   ws1.on('message', (msg) => {
     const data = JSON.parse(msg.toString());
     if (data.type === 'registered') {
-      // Once registered, wait a bit and call user202
       setTimeout(() => {
         console.log('[Test] Client 1 calling user202');
         ws1.send(JSON.stringify({
           type: 'call_request',
           from: 'user101',
           to: 'user202',
-          payload: { sdp: 'dummy_offer_sdp' }
+          payload: { sdp: 'dummy_offer_sdp' },
         }));
       }, 500);
     }
   });
 
-  setTimeout(() => {
-    if (!testPassed) {
-      console.error('[Test] TIMEOUT: Test failed');
-      serverProc.kill();
-      process.exit(1);
-    }
-  }, 5000);
+  ws1.on('error', (err) => {
+    console.error('[Test] Client 1 error:', err.message);
+    clearTimeout(globalTimeout);
+    cleanup(1);
+  });
+
+  ws2.on('error', (err) => {
+    console.error('[Test] Client 2 error:', err.message);
+    clearTimeout(globalTimeout);
+    cleanup(1);
+  });
 }, 1000);

@@ -1,14 +1,19 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../l10n/app_localizations.dart';
 import '../models/avatar_model.dart';
 import '../models/call_state.dart';
 import '../services/foreground_service.dart';
 import '../services/signaling_service.dart';
 import '../services/webrtc_service.dart';
 import '../theme/app_theme.dart';
+import 'widgets/avatar_circle.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -33,6 +38,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   CallStatus _callStatus = CallStatus.idle;
   List<PeerInfo> _onlinePeers = [];
   String _iceState = 'Idle';
+  String? _backgroundPath;
 
   Timer? _callDurationTimer;
   int _callSeconds = 0;
@@ -63,6 +69,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     final savedAvatar = prefs.getString('user_avatar');
     final savedServer = prefs.getString('server_url');
     final savedStun = prefs.getString('stun_server');
+    final savedToken = prefs.getString('access_token');
+    final savedBackground = prefs.getString('background_path');
     final isDark = prefs.getBool('is_dark_mode') ?? true;
 
     isDarkModeNotifier.value = isDark;
@@ -84,6 +92,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     if (savedStun != null && savedStun.isNotEmpty) {
       _stunServerController.text = savedStun;
       _webrtcService.updateStunServer(savedStun);
+    }
+    if (savedToken != null && savedToken.isNotEmpty) {
+      _signalingService.setAuthToken(savedToken);
+    }
+    if (savedBackground != null && savedBackground.isNotEmpty) {
+      _backgroundPath = savedBackground;
     }
 
     if (mounted) setState(() {});
@@ -109,7 +123,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           if (status == CallStatus.connected) {
             _startCallTimer();
             ForegroundServiceManager.startCallForeground(
-                _webrtcService.currentPeerId ?? '对端用户');
+                _webrtcService.currentPeerId ?? _l10n().unknownUser);
           } else if (status == CallStatus.ended || status == CallStatus.idle) {
             _stopCallTimer();
             ForegroundServiceManager.stopCallForeground();
@@ -124,6 +138,14 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         setState(() => _iceState = state);
       }
     });
+
+    // Feedback from the WebRTC layer, keyed for localization.
+    _webrtcService.onError = (key) {
+      if (mounted) _showSnack(_l10n().t(key));
+    };
+    _webrtcService.onNotice = (key) {
+      if (mounted) _showSnack(_l10n().t(key));
+    };
 
     // User list events
     _signalingService.onRegistered = (myId, users) {
@@ -161,16 +183,20 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     };
 
     _signalingService.onErrorOccurred = (err) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(err),
-            backgroundColor: Colors.redAccent,
-            behavior: SnackBarBehavior.floating,
-          ),
-        );
-      }
+      if (mounted) _showSnack(err);
     };
+  }
+
+  AppLocalizations _l10n() => AppLocalizations.of(context)!;
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppTheme.danger,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   Future<void> _connectSignaling() async {
@@ -202,18 +228,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return '$minutes:$seconds';
   }
 
-  void _makeCall(String targetId, {String? targetAvatar}) async {
+  Future<void> _makeCall(String targetId, {String? targetAvatar}) async {
+    final l10n = _l10n();
     final target = targetId.trim();
     if (target.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请输入对方的用户 ID')),
-      );
+      _showSnack(l10n.errorEmptyTarget);
       return;
     }
     if (target == _myUserId) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('不能呼叫自己')),
-      );
+      _showSnack(l10n.errorSelfCall);
+      return;
+    }
+    if (!_signalingService.isConnected) {
+      _showSnack(l10n.errorNotConnected);
       return;
     }
 
@@ -222,6 +249,43 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     }
 
     await _webrtcService.startCall(target);
+  }
+
+  // ----- Background image handling -----
+  Future<void> _pickBackground() async {
+    final l10n = _l10n();
+    try {
+      final picker = ImagePicker();
+      final XFile? file = await picker.pickImage(source: ImageSource.gallery);
+      if (file == null) return;
+
+      final ext = file.path.contains('.')
+          ? file.path.substring(file.path.lastIndexOf('.'))
+          : '.jpg';
+      final dir = await getApplicationDocumentsDirectory();
+      final dest = File('${dir.path}/custom_background$ext');
+      await File(file.path).copy(dest.path);
+
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('background_path', dest.path);
+      if (mounted) {
+        setState(() => _backgroundPath = dest.path);
+        _showSnack(l10n.backgroundSaved);
+      }
+    } catch (e) {
+      print('[Background] Failed to set background: $e');
+      if (mounted) _showSnack(l10n.callFailed);
+    }
+  }
+
+  Future<void> _resetBackground() async {
+    final l10n = _l10n();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('background_path');
+    if (mounted) {
+      setState(() => _backgroundPath = null);
+      _showSnack(l10n.backgroundReset);
+    }
   }
 
   @override
@@ -244,6 +308,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return ValueListenableBuilder<bool>(
       valueListenable: isDarkModeNotifier,
       builder: (context, isDark, _) {
+        final l10n = AppLocalizations.of(context)!;
         return Scaffold(
           backgroundColor: isDark ? AppTheme.darkBg : AppTheme.skyBg,
           appBar: AppBar(
@@ -266,7 +331,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(width: 10),
                 Text(
-                  'P2P 语音直通',
+                  l10n.headerTitle,
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     fontSize: 18,
@@ -276,13 +341,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ],
             ),
             actions: [
-              _buildSignalingStatusPill(isDark),
+              _buildSignalingStatusPill(),
               IconButton(
                 icon: Icon(
                   isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined,
                   color: isDark ? Colors.amber : AppTheme.skyAccent,
                 ),
-                tooltip: isDark ? '切换为天蓝浅色主题' : '切换为深色主题',
+                tooltip: isDark ? l10n.tooltipLightTheme : l10n.tooltipDarkTheme,
                 onPressed: () async {
                   final newMode = !isDark;
                   isDarkModeNotifier.value = newMode;
@@ -295,7 +360,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Icons.settings,
                   color: isDark ? Colors.white70 : AppTheme.skyTextSecondary,
                 ),
-                tooltip: '网络与服务器设置',
+                tooltip: l10n.tooltipSettings,
                 onPressed: () => _showSettingsDialog(isDark),
               ),
               const SizedBox(width: 6),
@@ -303,9 +368,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           ),
           body: Stack(
             children: [
+              if (_backgroundPath != null) ...[
+                Positioned.fill(
+                  child: Image.file(
+                    File(_backgroundPath!),
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stack) => const SizedBox(),
+                  ),
+                ),
+                Positioned.fill(
+                  child: Container(
+                    color: isDark
+                        ? Colors.black.withValues(alpha: 0.45)
+                        : Colors.white.withValues(alpha: 0.35),
+                  ),
+                ),
+              ],
               SafeArea(
                 child: SingleChildScrollView(
-                  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
@@ -320,13 +402,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   ),
                 ),
               ),
-              // Incoming call overlay
               if (_callStatus == CallStatus.incoming)
-                _buildIncomingCallOverlay(isDark),
-              // Active or Calling overlay
+                _buildIncomingCallOverlay(),
               if (_callStatus == CallStatus.calling ||
                   _callStatus == CallStatus.connected)
-                _buildActiveCallOverlay(isDark),
+                _buildActiveCallOverlay(),
             ],
           ),
         );
@@ -334,29 +414,30 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildSignalingStatusPill(bool isDark) {
+  Widget _buildSignalingStatusPill() {
+    final l10n = _l10n();
     Color color;
     String text;
     IconData? icon;
 
     switch (_signalingStatus) {
       case SignalingStatus.connected:
-        color = const Color(0xFF10B981);
-        text = '在线';
+        color = AppTheme.success;
+        text = l10n.statusOnline;
         break;
       case SignalingStatus.connecting:
-        color = const Color(0xFFF59E0B);
-        text = '连接中';
+        color = AppTheme.warning;
+        text = l10n.statusConnecting;
         break;
       case SignalingStatus.reconnecting:
         color = const Color(0xFFF97316);
-        text = '自动重连中';
+        text = l10n.statusReconnecting;
         icon = Icons.sync;
         break;
       case SignalingStatus.error:
       case SignalingStatus.disconnected:
-        color = const Color(0xFFEF4444);
-        text = '未连信令';
+        color = AppTheme.danger;
+        text = l10n.statusOffline;
         break;
     }
 
@@ -382,7 +463,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           const SizedBox(width: 6),
           Text(
             text,
-            style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold),
+            style: TextStyle(
+                color: color, fontSize: 12, fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -390,6 +472,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _buildMyIdentityCard(bool isDark) {
+    final l10n = _l10n();
     final avatarItem = AvatarManager.getById(_myAvatar);
 
     return Container(
@@ -415,39 +498,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           GestureDetector(
             onTap: () => _showAvatarPicker(isDark),
             child: Stack(
+              clipBehavior: Clip.none,
               children: [
-                Container(
-                  width: 54,
-                  height: 54,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: avatarItem.gradient,
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: avatarItem.gradient.first.withValues(alpha: 0.4),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    avatarItem.emoji,
-                    style: const TextStyle(fontSize: 28),
-                  ),
-                ),
+                AvatarCircle(avatar: avatarItem, size: 54),
                 Positioned(
-                  right: 0,
-                  bottom: 0,
+                  right: -2,
+                  bottom: -2,
                   child: Container(
                     padding: const EdgeInsets.all(3),
                     decoration: BoxDecoration(
-                      color: isDark ? const Color(0xFF38BDF8) : const Color(0xFF0284C7),
+                      color: isDark
+                          ? const Color(0xFF38BDF8)
+                          : const Color(0xFF0284C7),
                       shape: BoxShape.circle,
+                      border: Border.all(
+                          color: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+                          width: 2),
                     ),
                     child: const Icon(Icons.edit, size: 10, color: Colors.white),
                   ),
@@ -463,7 +529,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 Row(
                   children: [
                     Text(
-                      '我的用户 ID',
+                      l10n.myUserIdLabel,
                       style: TextStyle(
                         color: isDark
                             ? AppTheme.darkTextSecondary
@@ -473,7 +539,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                     const SizedBox(width: 6),
                     Text(
-                      '(${avatarItem.name})',
+                      '(${l10n.avatarName(_myAvatar)})',
                       style: TextStyle(
                         color: isDark
                             ? AppTheme.darkAccent
@@ -486,7 +552,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  _myUserId.isEmpty ? '加载中...' : _myUserId,
+                  _myUserId.isEmpty ? l10n.loading : _myUserId,
                   style: TextStyle(
                     color: isDark ? Colors.white : AppTheme.skyTextPrimary,
                     fontSize: 20,
@@ -503,13 +569,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               color: isDark ? AppTheme.darkAccent : AppTheme.skyAccent,
               size: 20,
             ),
-            tooltip: '复制 ID',
+            tooltip: l10n.tooltipCopy,
             onPressed: () {
               if (_myUserId.isNotEmpty) {
                 Clipboard.setData(ClipboardData(text: _myUserId));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('已复制用户 ID 到剪贴板')),
-                );
+                _showSnack(l10n.toastCopied);
               }
             },
           ),
@@ -519,7 +583,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               color: isDark ? Colors.white70 : AppTheme.skyTextSecondary,
               size: 20,
             ),
-            tooltip: '修改 ID',
+            tooltip: l10n.tooltipEdit,
             onPressed: () => _showEditUserIdDialog(isDark),
           ),
         ],
@@ -528,6 +592,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _buildDirectP2PNotice(bool isDark) {
+    final l10n = _l10n();
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -551,7 +616,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              '安全直连：音频流在手机间通过硬件级 DTLS-SRTP 密文点对点传输，零云端存储，防窃听防篡改。',
+              l10n.secureNotice,
               style: TextStyle(
                 color: isDark ? const Color(0xFF6EE7B7) : const Color(0xFF15803D),
                 fontSize: 11,
@@ -565,6 +630,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _buildDialCard(bool isDark) {
+    final l10n = _l10n();
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
@@ -587,7 +653,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '发起 P2P 呼叫',
+            l10n.dialTitle,
             style: TextStyle(
               color: isDark ? Colors.white : AppTheme.skyTextPrimary,
               fontSize: 16,
@@ -602,7 +668,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               fontSize: 15,
             ),
             decoration: InputDecoration(
-              hintText: '输入对方的用户 ID (例如 user_8888)',
+              hintText: l10n.dialHint,
               hintStyle: TextStyle(
                 color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
                 fontSize: 14,
@@ -632,7 +698,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   color: isDark ? AppTheme.darkAccent : AppTheme.skyAccent,
                 ),
               ),
-              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
             ),
           ),
           const SizedBox(height: 16),
@@ -641,14 +708,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             height: 48,
             child: ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
-                backgroundColor: isDark ? const Color(0xFF2563EB) : AppTheme.skyButton,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                backgroundColor:
+                    isDark ? AppTheme.primaryButtonDark : AppTheme.skyButton,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12)),
                 elevation: 3,
               ),
               icon: const Icon(Icons.phone, color: Colors.white),
-              label: const Text(
-                '开始高清直连通话',
-                style: TextStyle(
+              label: Text(
+                l10n.dialButton,
+                style: const TextStyle(
                   color: Colors.white,
                   fontSize: 15,
                   fontWeight: FontWeight.bold,
@@ -663,6 +732,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   Widget _buildOnlineUsersSection(bool isDark) {
+    final l10n = _l10n();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -672,7 +742,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
             Row(
               children: [
                 Text(
-                  '当前在线设备',
+                  l10n.onlineDevices,
                   style: TextStyle(
                     color: isDark ? Colors.white : AppTheme.skyTextPrimary,
                     fontSize: 16,
@@ -681,7 +751,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
                     color: (isDark ? AppTheme.darkAccent : AppTheme.skyAccent)
                         .withValues(alpha: 0.15),
@@ -731,17 +802,19 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 const SizedBox(height: 10),
                 Text(
-                  '暂无其他设备在线',
+                  l10n.noPeers,
                   style: TextStyle(
-                    color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
+                    color:
+                        isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
                     fontSize: 14,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  '在另一台手机上启动本应用即可在此自动感知',
-                  style: TextStyle(
-                    color: isDark ? const Color(0xFF64748B) : const Color(0xFF64748B),
+                  l10n.noPeersHint,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: Color(0xFF64748B),
                     fontSize: 11,
                   ),
                 ),
@@ -759,7 +832,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               final peerAvatar = AvatarManager.getById(peer.avatar);
 
               return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
                   color: isDark ? AppTheme.darkCard : AppTheme.skyCard,
                   borderRadius: BorderRadius.circular(12),
@@ -778,39 +852,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 ),
                 child: Row(
                   children: [
-                    Stack(
-                      children: [
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            gradient: LinearGradient(
-                              colors: peerAvatar.gradient,
-                              begin: Alignment.topLeft,
-                              end: Alignment.bottomRight,
-                            ),
-                            shape: BoxShape.circle,
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            peerAvatar.emoji,
-                            style: const TextStyle(fontSize: 22),
-                          ),
-                        ),
-                        Positioned(
-                          right: 0,
-                          bottom: 0,
-                          child: Container(
-                            width: 10,
-                            height: 10,
-                            decoration: const BoxDecoration(
-                              shape: BoxShape.circle,
-                              color: Color(0xFF10B981),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
+                    AvatarCircle(
+                        avatar: peerAvatar, size: 44, showOnlineDot: true),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
@@ -819,14 +862,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           Text(
                             peer.userId,
                             style: TextStyle(
-                              color: isDark ? Colors.white : AppTheme.skyTextPrimary,
+                              color: isDark
+                                  ? Colors.white
+                                  : AppTheme.skyTextPrimary,
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            peerAvatar.name,
+                            l10n.avatarName(peer.avatar),
                             style: TextStyle(
                               color: isDark
                                   ? AppTheme.darkTextSecondary
@@ -839,13 +884,18 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF059669),
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                        backgroundColor: AppTheme.callGreen,
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 14, vertical: 8),
+                        shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8)),
                       ),
                       icon: const Icon(Icons.phone, size: 16, color: Colors.white),
-                      label: const Text('直拨', style: TextStyle(color: Colors.white, fontSize: 13)),
-                      onPressed: () => _makeCall(peer.userId, targetAvatar: peer.avatar),
+                      label: Text(l10n.directCall,
+                          style:
+                              const TextStyle(color: Colors.white, fontSize: 13)),
+                      onPressed: () =>
+                          _makeCall(peer.userId, targetAvatar: peer.avatar),
                     ),
                   ],
                 ),
@@ -856,8 +906,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildIncomingCallOverlay(bool isDark) {
-    final caller = _webrtcService.currentPeerId ?? '未知设备';
+  Widget _buildIncomingCallOverlay() {
+    final l10n = _l10n();
+    final caller = _webrtcService.currentPeerId ?? l10n.unknownUser;
     final callerAvatar = AvatarManager.getById(_webrtcService.remotePeerAvatar);
 
     return Container(
@@ -869,31 +920,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             const Spacer(),
-            Container(
-              width: 110,
-              height: 110,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: callerAvatar.gradient,
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: callerAvatar.gradient.first.withValues(alpha: 0.5),
-                    blurRadius: 20,
-                    spreadRadius: 4,
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: Text(callerAvatar.emoji, style: const TextStyle(fontSize: 54)),
-            ),
+            AvatarCircle(avatar: callerAvatar, size: 110, glow: true),
             const SizedBox(height: 24),
-            const Text(
-              '收到 P2P 直连呼叫',
-              style: TextStyle(color: Color(0xFF94A3B8), fontSize: 16),
+            Text(
+              l10n.incomingCall,
+              style: const TextStyle(color: Color(0xFF94A3B8), fontSize: 16),
             ),
             const SizedBox(height: 8),
             Text(
@@ -911,14 +942,15 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 color: const Color(0xFF10B981).withValues(alpha: 0.2),
                 borderRadius: BorderRadius.circular(20),
               ),
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.lock, color: Color(0xFF10B981), size: 14),
-                  SizedBox(width: 6),
+                  const Icon(Icons.lock, color: Color(0xFF10B981), size: 14),
+                  const SizedBox(width: 6),
                   Text(
-                    '端到端 UDP 加密直连',
-                    style: TextStyle(color: Color(0xFF10B981), fontSize: 12),
+                    l10n.e2eUdpBadge,
+                    style: const TextStyle(
+                        color: Color(0xFF10B981), fontSize: 12),
                   ),
                 ],
               ),
@@ -935,10 +967,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         heroTag: 'reject_call',
                         backgroundColor: const Color(0xFFEF4444),
                         onPressed: () => _webrtcService.rejectCall(),
-                        child: const Icon(Icons.call_end, color: Colors.white, size: 28),
+                        child: const Icon(Icons.call_end,
+                            color: Colors.white, size: 28),
                       ),
                       const SizedBox(height: 8),
-                      const Text('挂断', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      Text(l10n.hangup,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 13)),
                     ],
                   ),
                   Column(
@@ -947,10 +982,13 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         heroTag: 'accept_call',
                         backgroundColor: const Color(0xFF10B981),
                         onPressed: () => _webrtcService.acceptCall(),
-                        child: const Icon(Icons.call, color: Colors.white, size: 28),
+                        child: const Icon(Icons.call,
+                            color: Colors.white, size: 28),
                       ),
                       const SizedBox(height: 8),
-                      const Text('接听', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                      Text(l10n.answer,
+                          style: const TextStyle(
+                              color: Colors.white70, fontSize: 13)),
                     ],
                   ),
                 ],
@@ -962,27 +1000,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
-  Widget _buildActiveCallOverlay(bool isDark) {
+  Widget _buildActiveCallOverlay() {
+    final l10n = _l10n();
     final peer = _webrtcService.currentPeerId ?? '';
     final peerAvatar = AvatarManager.getById(_webrtcService.remotePeerAvatar);
     final isConnected = _callStatus == CallStatus.connected;
+    final isDirect = _webrtcService.connectionType.contains('穿透') ||
+        _webrtcService.connectionType.contains('SRTP');
+
+    final headerText = isConnected
+        ? (isDirect ? l10n.secureCalling : l10n.p2pCalling)
+        : l10n.establishing;
 
     return Container(
-      color: isDark ? const Color(0xFF0B1120) : const Color(0xFF082F49),
+      color: const Color(0xFF0B1120),
       width: double.infinity,
       height: double.infinity,
       child: SafeArea(
         child: Column(
           children: [
             const SizedBox(height: 30),
-            // Header status
             Text(
-              isConnected
-                  ? (_webrtcService.connectionType.contains('穿透') ||
-                          _webrtcService.connectionType.contains('SRTP')
-                      ? '🔒 端到端加密安全通话中'
-                      : '🟢 100% P2P 纯直连通话中')
-                  : '正在建立端到端加密直连...',
+              headerText,
               style: TextStyle(
                 color: isConnected
                     ? const Color(0xFF34D399)
@@ -992,50 +1031,29 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               ),
             ),
             const SizedBox(height: 24),
-
-            // Peer Avatar with glow
-            Container(
-              width: 96,
-              height: 96,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: peerAvatar.gradient,
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: peerAvatar.gradient.first.withValues(alpha: 0.5),
-                    blurRadius: 18,
-                    spreadRadius: 3,
-                  ),
-                ],
-              ),
-              alignment: Alignment.center,
-              child: Text(peerAvatar.emoji, style: const TextStyle(fontSize: 48)),
-            ),
+            AvatarCircle(avatar: peerAvatar, size: 96, glow: true),
             const SizedBox(height: 14),
-
             Text(
               peer,
-              style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+              style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 26,
+                  fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 8),
             Text(
-              isConnected ? _formatDuration(_callSeconds) : '信令协商与 NAT 打洞中...',
+              isConnected ? _formatDuration(_callSeconds) : l10n.negotiating,
               style: TextStyle(
                 color: isConnected ? Colors.white70 : const Color(0xFF94A3B8),
                 fontSize: 16,
-                fontFamily: 'monospace',
+                fontFeatures: const [FontFeature.tabularFigures()],
               ),
             ),
             const SizedBox(height: 16),
-
-            // Connection metrics badge
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 40),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: const Color(0xFF1E293B),
                 borderRadius: BorderRadius.circular(12),
@@ -1046,13 +1064,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('传输协议', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12)),
+                      Text(l10n.transportProtocol,
+                          style: const TextStyle(
+                              color: Color(0xFF94A3B8), fontSize: 12)),
                       Text(
                         _webrtcService.connectionType,
                         style: TextStyle(
-                          color: _webrtcService.connectionType.contains('直连')
-                              ? const Color(0xFF34D399)
-                              : const Color(0xFF38BDF8),
+                          color:
+                              _webrtcService.connectionType.contains('直连')
+                                  ? const Color(0xFF34D399)
+                                  : const Color(0xFF38BDF8),
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
@@ -1063,97 +1084,55 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('ICE 状态', style: TextStyle(color: Color(0xFF94A3B8), fontSize: 12)),
+                      Text(l10n.iceStateLabel,
+                          style: const TextStyle(
+                              color: Color(0xFF94A3B8), fontSize: 12)),
                       Text(
                         _iceState,
-                        style: const TextStyle(color: Colors.white, fontSize: 12),
+                        style:
+                            const TextStyle(color: Colors.white, fontSize: 12),
                       ),
                     ],
                   ),
                 ],
               ),
             ),
-
             const Spacer(),
-
-            // In-call control bar
             Padding(
               padding: const EdgeInsets.only(bottom: 40, left: 30, right: 30),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                 children: [
-                  // Mute toggle
-                  Column(
-                    children: [
-                      IconButton.filled(
-                        style: IconButton.styleFrom(
-                          backgroundColor: _webrtcService.isMuted
-                              ? Colors.white
-                              : const Color(0xFF1E293B),
-                          padding: const EdgeInsets.all(16),
-                        ),
-                        icon: Icon(
-                          _webrtcService.isMuted ? Icons.mic_off : Icons.mic,
-                          color: _webrtcService.isMuted ? Colors.black : Colors.white,
-                          size: 28,
-                        ),
-                        onPressed: () async {
-                          await _webrtcService.toggleMute();
-                          setState(() {});
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _webrtcService.isMuted ? '已静音' : '麦克风',
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                    ],
+                  _callControl(
+                    icon: _webrtcService.isMuted ? Icons.mic_off : Icons.mic,
+                    label: _webrtcService.isMuted
+                        ? l10n.mutedLabel
+                        : l10n.micLabel,
+                    active: _webrtcService.isMuted,
+                    onPressed: () async {
+                      await _webrtcService.toggleMute();
+                      if (mounted) setState(() {});
+                    },
                   ),
-
-                  // Hangup button
-                  Column(
-                    children: [
-                      IconButton.filled(
-                        style: IconButton.styleFrom(
-                          backgroundColor: const Color(0xFFEF4444),
-                          padding: const EdgeInsets.all(20),
-                        ),
-                        icon: const Icon(Icons.call_end, color: Colors.white, size: 34),
-                        onPressed: () => _webrtcService.hangup(),
-                      ),
-                      const SizedBox(height: 8),
-                      const Text('挂断', style: TextStyle(color: Colors.white70, fontSize: 12)),
-                    ],
+                  _callControl(
+                    icon: Icons.call_end,
+                    label: l10n.hangup,
+                    active: false,
+                    danger: true,
+                    onPressed: () => _webrtcService.hangup(),
                   ),
-
-                  // Speaker toggle
-                  Column(
-                    children: [
-                      IconButton.filled(
-                        style: IconButton.styleFrom(
-                          backgroundColor: _webrtcService.isSpeakerphoneOn
-                              ? Colors.white
-                              : const Color(0xFF1E293B),
-                          padding: const EdgeInsets.all(16),
-                        ),
-                        icon: Icon(
-                          _webrtcService.isSpeakerphoneOn
-                              ? Icons.volume_up
-                              : Icons.volume_down,
-                          color: _webrtcService.isSpeakerphoneOn ? Colors.black : Colors.white,
-                          size: 28,
-                        ),
-                        onPressed: () async {
-                          await _webrtcService.toggleSpeakerphone();
-                          setState(() {});
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        _webrtcService.isSpeakerphoneOn ? '扬声器' : '听筒',
-                        style: const TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                    ],
+                  _callControl(
+                    icon: _webrtcService.isSpeakerphoneOn
+                        ? Icons.volume_up
+                        : Icons.volume_down,
+                    label: _webrtcService.isSpeakerphoneOn
+                        ? l10n.speakerLabel
+                        : l10n.earpieceLabel,
+                    active: _webrtcService.isSpeakerphoneOn,
+                    onPressed: () async {
+                      await _webrtcService.toggleSpeakerphone();
+                      if (mounted) setState(() {});
+                    },
                   ),
                 ],
               ),
@@ -1164,7 +1143,40 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     );
   }
 
+  Widget _callControl({
+    required IconData icon,
+    required String label,
+    required bool active,
+    required VoidCallback onPressed,
+    bool danger = false,
+  }) {
+    return Column(
+      children: [
+        IconButton.filled(
+          style: IconButton.styleFrom(
+            backgroundColor: danger
+                ? const Color(0xFFEF4444)
+                : (active ? Colors.white : const Color(0xFF1E293B)),
+            padding: EdgeInsets.all(danger ? 20 : 16),
+          ),
+          icon: Icon(
+            icon,
+            color: danger
+                ? Colors.white
+                : (active ? Colors.black : Colors.white),
+            size: danger ? 34 : 28,
+          ),
+          onPressed: onPressed,
+        ),
+        const SizedBox(height: 8),
+        Text(label,
+            style: const TextStyle(color: Colors.white70, fontSize: 12)),
+      ],
+    );
+  }
+
   void _showAvatarPicker(bool isDark) {
+    final l10n = _l10n();
     showModalBottomSheet(
       context: context,
       backgroundColor: isDark ? AppTheme.darkCard : AppTheme.skyCard,
@@ -1184,27 +1196,31 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        '选择您的专属头像',
+                        l10n.avatarPickerTitle,
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
-                          color: isDark ? Colors.white : AppTheme.skyTextPrimary,
+                          color:
+                              isDark ? Colors.white : AppTheme.skyTextPrimary,
                         ),
                       ),
                       IconButton(
                         icon: Icon(
                           Icons.close,
-                          color: isDark ? Colors.white70 : AppTheme.skyTextSecondary,
+                          color: isDark
+                              ? Colors.white70
+                              : AppTheme.skyTextSecondary,
                         ),
                         onPressed: () => Navigator.pop(context),
                       ),
                     ],
                   ),
                   const SizedBox(height: 16),
-                  Flexible(
+                  SizedBox(
+                    height: 260,
                     child: GridView.builder(
-                      shrinkWrap: true,
-                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
                         crossAxisCount: 4,
                         crossAxisSpacing: 12,
                         mainAxisSpacing: 12,
@@ -1218,55 +1234,43 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                           onTap: () async {
                             setState(() => _myAvatar = item.id);
                             setModalState(() {});
-                            final prefs = await SharedPreferences.getInstance();
+                            final prefs =
+                                await SharedPreferences.getInstance();
                             await prefs.setString('user_avatar', item.id);
                             _signalingService.updateProfile(newAvatar: item.id);
                             if (context.mounted) Navigator.pop(context);
                           },
                           child: Column(
                             children: [
-                              Container(
-                                width: 56,
-                                height: 56,
-                                decoration: BoxDecoration(
-                                  gradient: LinearGradient(
-                                    colors: item.gradient,
-                                    begin: Alignment.topLeft,
-                                    end: Alignment.bottomRight,
-                                  ),
-                                  shape: BoxShape.circle,
-                                  border: isSelected
-                                      ? Border.all(
-                                          color: isDark
-                                              ? const Color(0xFF38BDF8)
-                                              : const Color(0xFF0284C7),
-                                          width: 3,
-                                        )
-                                      : null,
-                                  boxShadow: [
-                                    if (isSelected)
-                                      BoxShadow(
-                                        color: item.gradient.first.withValues(alpha: 0.5),
-                                        blurRadius: 10,
-                                        spreadRadius: 2,
-                                      ),
-                                  ],
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  item.emoji,
-                                  style: const TextStyle(fontSize: 28),
-                                ),
+                              AvatarCircle(
+                                avatar: item,
+                                size: 56,
+                                border: isSelected
+                                    ? Border.all(
+                                        color: isDark
+                                            ? const Color(0xFF38BDF8)
+                                            : const Color(0xFF0284C7),
+                                        width: 3,
+                                      )
+                                    : null,
                               ),
                               const SizedBox(height: 4),
                               Text(
-                                item.name,
+                                l10n.avatarName(item.id),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
                                   fontSize: 11,
-                                  fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                                  fontWeight: isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
                                   color: isDark
-                                      ? (isSelected ? AppTheme.darkAccent : Colors.white70)
-                                      : (isSelected ? AppTheme.skyAccent : AppTheme.skyTextSecondary),
+                                      ? (isSelected
+                                          ? AppTheme.darkAccent
+                                          : Colors.white70)
+                                      : (isSelected
+                                          ? AppTheme.skyAccent
+                                          : AppTheme.skyTextSecondary),
                                 ),
                               ),
                             ],
@@ -1285,20 +1289,22 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   void _showEditUserIdDialog(bool isDark) {
+    final l10n = _l10n();
     final controller = TextEditingController(text: _myUserId);
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: isDark ? AppTheme.darkCard : AppTheme.skyCard,
         title: Text(
-          '修改用户 ID',
+          l10n.editIdTitle,
           style: TextStyle(color: isDark ? Colors.white : AppTheme.skyTextPrimary),
         ),
         content: TextField(
           controller: controller,
-          style: TextStyle(color: isDark ? Colors.white : AppTheme.skyTextPrimary),
+          style: TextStyle(
+              color: isDark ? Colors.white : AppTheme.skyTextPrimary),
           decoration: InputDecoration(
-            hintText: '请输入新 ID',
+            hintText: l10n.enterNewIdHint,
             hintStyle: TextStyle(
               color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
             ),
@@ -1307,7 +1313,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         actions: [
           TextButton(
             child: Text(
-              '取消',
+              l10n.cancel,
               style: TextStyle(
                 color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
               ),
@@ -1316,9 +1322,10 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: isDark ? const Color(0xFF2563EB) : AppTheme.skyButton,
+              backgroundColor:
+                  isDark ? AppTheme.primaryButtonDark : AppTheme.skyButton,
             ),
-            child: const Text('保存修改', style: TextStyle(color: Colors.white)),
+            child: Text(l10n.save, style: const TextStyle(color: Colors.white)),
             onPressed: () async {
               final newId = controller.text.trim();
               if (newId.isNotEmpty && newId != _myUserId) {
@@ -1332,110 +1339,207 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           ),
         ],
       ),
+    ).whenComplete(controller.dispose);
+  }
+
+  Future<void> _showSettingsDialog(bool isDark) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (!mounted) return;
+    final tokenController =
+        TextEditingController(text: prefs.getString('access_token') ?? '');
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            final l10n = AppLocalizations.of(context)!;
+            return AlertDialog(
+              backgroundColor: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+              title: Text(
+                l10n.settingsTitle,
+                style: TextStyle(
+                    color: isDark ? Colors.white : AppTheme.skyTextPrimary),
+              ),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _settingsLabel(l10n.serverLabel, isDark),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _serverUrlController,
+                      style: TextStyle(
+                        color:
+                            isDark ? Colors.white : AppTheme.skyTextPrimary,
+                        fontSize: 14,
+                      ),
+                      decoration: _settingsInputDecoration(isDark,
+                          hint: 'ws://server-ip:8080'),
+                    ),
+                    const SizedBox(height: 16),
+                    _settingsLabel(l10n.stunLabel, isDark),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: _stunServerController,
+                      style: TextStyle(
+                        color:
+                            isDark ? Colors.white : AppTheme.skyTextPrimary,
+                        fontSize: 14,
+                      ),
+                      decoration: _settingsInputDecoration(isDark,
+                          hint: 'stun:server-ip:3478'),
+                    ),
+                    const SizedBox(height: 16),
+                    _settingsLabel(l10n.tokenLabel, isDark),
+                    const SizedBox(height: 6),
+                    TextField(
+                      controller: tokenController,
+                      obscureText: true,
+                      style: TextStyle(
+                        color:
+                            isDark ? Colors.white : AppTheme.skyTextPrimary,
+                        fontSize: 14,
+                      ),
+                      decoration: _settingsInputDecoration(isDark, hint: ''),
+                    ),
+                    const SizedBox(height: 16),
+                    _settingsLabel(l10n.languageLabel, isDark),
+                    const SizedBox(height: 6),
+                    ValueListenableBuilder<String>(
+                      valueListenable: languageCodeNotifier,
+                      builder: (context, lang, _) {
+                        final innerL10n = AppLocalizations.of(context)!;
+                        return DropdownButton<String>(
+                          value: lang,
+                          isExpanded: true,
+                          underline: const SizedBox(),
+                          items: [
+                            DropdownMenuItem(
+                                value: 'auto',
+                                child: Text(innerL10n.languageAuto)),
+                            const DropdownMenuItem(
+                                value: 'zh', child: Text('中文')),
+                            const DropdownMenuItem(
+                                value: 'en', child: Text('English')),
+                            const DropdownMenuItem(
+                                value: 'fr', child: Text('Français')),
+                          ],
+                          onChanged: (v) async {
+                            if (v == null) return;
+                            languageCodeNotifier.value = v;
+                            final prefs =
+                                await SharedPreferences.getInstance();
+                            await prefs.setString('language_code', v);
+                            setDialogState(() {});
+                          },
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 16),
+                    _settingsLabel(l10n.backgroundLabel, isDark),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.image_outlined),
+                            label: Text(l10n.chooseImage),
+                            onPressed: () async {
+                              Navigator.pop(context);
+                              await _pickBackground();
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: OutlinedButton.icon(
+                            icon: const Icon(Icons.restore),
+                            label: Text(l10n.resetBackground),
+                            onPressed: () async {
+                              Navigator.pop(context);
+                              await _resetBackground();
+                            },
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      l10n.settingsNote,
+                      style: const TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 11,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  child: Text(
+                    l10n.cancel,
+                    style: TextStyle(
+                      color: isDark
+                          ? AppTheme.darkTextSecondary
+                          : AppTheme.skyTextSecondary,
+                    ),
+                  ),
+                  onPressed: () => Navigator.pop(context),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: isDark
+                        ? AppTheme.primaryButtonDark
+                        : AppTheme.skyButton,
+                  ),
+                  child:
+                      Text(l10n.applySave, style: const TextStyle(color: Colors.white)),
+                  onPressed: () async {
+                    final prefs = await SharedPreferences.getInstance();
+                    await prefs.setString(
+                        'server_url', _serverUrlController.text.trim());
+                    await prefs.setString(
+                        'stun_server', _stunServerController.text.trim());
+                    await prefs.setString(
+                        'access_token', tokenController.text.trim());
+
+                    _signalingService.setAuthToken(tokenController.text.trim());
+                    _webrtcService.updateStunServer(_stunServerController.text);
+                    _connectSignaling();
+                    if (context.mounted) Navigator.pop(context);
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+    tokenController.dispose();
+  }
+
+  Widget _settingsLabel(String text, bool isDark) {
+    return Text(
+      text,
+      style: TextStyle(
+        color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
+        fontSize: 12,
+      ),
     );
   }
 
-  void _showSettingsDialog(bool isDark) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: isDark ? AppTheme.darkCard : AppTheme.skyCard,
-        title: Text(
-          '服务器与网络设置',
-          style: TextStyle(color: isDark ? Colors.white : AppTheme.skyTextPrimary),
-        ),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'WebSocket 信令服务器地址',
-                style: TextStyle(
-                  color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _serverUrlController,
-                style: TextStyle(
-                  color: isDark ? Colors.white : AppTheme.skyTextPrimary,
-                  fontSize: 14,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'ws://硅谷服务器IP:8080',
-                  hintStyle: TextStyle(
-                    color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
-                  ),
-                  filled: true,
-                  fillColor: isDark ? AppTheme.darkBg : AppTheme.skyBg,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Text(
-                'STUN 打洞穿透服务器',
-                style: TextStyle(
-                  color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
-                  fontSize: 12,
-                ),
-              ),
-              const SizedBox(height: 6),
-              TextField(
-                controller: _stunServerController,
-                style: TextStyle(
-                  color: isDark ? Colors.white : AppTheme.skyTextPrimary,
-                  fontSize: 14,
-                ),
-                decoration: InputDecoration(
-                  hintText: 'stun:硅谷服务器IP:3478 或 stun.l.google.com:19302',
-                  hintStyle: TextStyle(
-                    color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
-                  ),
-                  filled: true,
-                  fillColor: isDark ? AppTheme.darkBg : AppTheme.skyBg,
-                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '注：修改后将自动保存并重新连接信令服务。',
-                style: TextStyle(
-                  color: isDark ? const Color(0xFF64748B) : const Color(0xFF64748B),
-                  fontSize: 11,
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            child: Text(
-              '取消',
-              style: TextStyle(
-                color: isDark ? AppTheme.darkTextSecondary : AppTheme.skyTextSecondary,
-              ),
-            ),
-            onPressed: () => Navigator.pop(context),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: isDark ? const Color(0xFF2563EB) : AppTheme.skyButton,
-            ),
-            child: const Text('应用并保存', style: TextStyle(color: Colors.white)),
-            onPressed: () async {
-              final prefs = await SharedPreferences.getInstance();
-              await prefs.setString('server_url', _serverUrlController.text.trim());
-              await prefs.setString('stun_server', _stunServerController.text.trim());
-
-              _webrtcService.updateStunServer(_stunServerController.text);
-              _connectSignaling();
-              if (context.mounted) Navigator.pop(context);
-            },
-          ),
-        ],
+  InputDecoration _settingsInputDecoration(bool isDark, {required String hint}) {
+    return InputDecoration(
+      hintText: hint,
+      hintStyle: TextStyle(
+        color: isDark ? const Color(0xFF64748B) : const Color(0xFF94A3B8),
+        fontSize: 14,
       ),
+      filled: true,
+      fillColor: isDark ? AppTheme.darkBg : AppTheme.skyBg,
+      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
     );
   }
 }

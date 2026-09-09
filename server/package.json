@@ -4,7 +4,8 @@
   "description": "Ultra-lightweight WebRTC P2P Signaling Server",
   "main": "signaling.js",
   "scripts": {
-    "start": "node signaling.js"
+    "start": "node signaling.js",
+    "test": "node test_signaling.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

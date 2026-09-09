@@ -94,7 +94,9 @@ class CallForegroundService : Service() {
                 "P2PVoiceCall::CallWakeLock"
             ).apply {
                 setReferenceCounted(false)
-                acquire(2 * 60 * 60 * 1000L) // max 2 hours safe timeout
+                // No fixed timeout: long calls should not be interrupted. The
+                // lock is released in releaseWakeLock()/onDestroy().
+                acquire()
             }
         }
     }

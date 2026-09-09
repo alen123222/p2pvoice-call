@@ -1,9 +1,47 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:client/main.dart';
+import 'package:client/l10n/app_localizations.dart';
+import 'package:client/models/avatar_model.dart';
 
 void main() {
-  testWidgets('P2P App smoke test', (WidgetTester tester) async {
-    await tester.pumpWidget(const P2PVoiceApp());
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('AppLocalizations resolves each supported language', () {
+    expect(AppLocalizations(const Locale('en')).headerTitle, 'P2P Direct Voice');
+    expect(AppLocalizations(const Locale('zh')).headerTitle, 'P2P 语音直通');
+    expect(AppLocalizations(const Locale('fr')).headerTitle, 'Voix directe P2P');
+  });
+
+  test('AppLocalizations falls back to English for unsupported languages', () {
+    expect(AppLocalizations(const Locale('de')).headerTitle, 'P2P Direct Voice');
+    expect(AppLocalizations(const Locale('en')).avatarName('pilot'), 'Pilot');
+    expect(AppLocalizations(const Locale('zh')).avatarName('pilot'), '领航员');
+  });
+
+  test('AvatarManager returns a default avatar for unknown ids', () {
+    expect(AvatarManager.getById('missing').id, 'pilot');
+    expect(AvatarManager.getById(null).id, 'pilot');
+  });
+
+  testWidgets('App localizes content through the MaterialApp', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        locale: const Locale('zh'),
+        supportedLocales: AppLocalizations.supportedLocales,
+        localizationsDelegates: const [
+          AppLocalizations.delegate,
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        home: Builder(
+          builder: (context) =>
+              Text(AppLocalizations.of(context)!.headerTitle),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
     expect(find.text('P2P 语音直通'), findsOneWidget);
   });
 }

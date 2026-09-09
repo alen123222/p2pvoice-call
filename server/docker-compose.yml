@@ -1,7 +1,5 @@
-version: '3.8'
-
 services:
-  # 1. P2P 信令服务器 (处理握手、呼叫与 ICE 交换，不走音频)
+  # 1. P2P signaling server (handles handshake, call control and ICE exchange; no media)
   signaling:
     build: .
     container_name: p2p-signaling
@@ -10,13 +8,24 @@ services:
       - "8080:8080"
     environment:
       - PORT=8080
+      # Optional shared token required by clients at registration.
+      - SIGNALING_TOKEN=${SIGNALING_TOKEN:-}
+      # Enable TURN credential issuance (TURN REST API). Set TURN_SECRET to the
+      # same value as Coturn's static-auth-secret.
+      - TURN_SERVER=${TURN_SERVER:-170.106.195.109:3478}
+      - TURN_SECRET=${TURN_SECRET:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:8080', r => process.exit(r.statusCode === 426 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # 2. 纯 STUN 服务器 (帮助手机穿透 NAT 探测公网 IP，严禁中转任何媒体)
+  # 2. STUN / private TURN relay (helps phones traverse NAT; media stays DTLS-SRTP encrypted)
   stun:
     image: coturn/coturn:latest
     container_name: p2p-stun
     restart: always
-    network_mode: "host" # STUN requires host networking to see real client IPs
+    network_mode: "host" # STUN/TURN requires host networking to see real client IPs
     volumes:
       - ./turnserver.conf:/etc/coturn/turnserver.conf:ro
     command: ["-c", "/etc/coturn/turnserver.conf"]

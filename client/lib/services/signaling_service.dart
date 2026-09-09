@@ -23,10 +23,13 @@ class PeerInfo {
 
 class SignalingService {
   WebSocketChannel? _channel;
+  StreamSubscription<dynamic>? _channelSub;
   String? _serverUrl;
   String? _myUserId;
   String _myAvatar = 'pilot';
+  String? _authToken;
   bool _isConnected = false;
+  bool _registrationPending = false;
   bool _isManualDisconnect = false;
 
   Timer? _reconnectTimer;
@@ -42,14 +45,16 @@ class SignalingService {
   Function(PeerInfo user)? onUserJoined;
   Function(String userId)? onUserLeft;
   Function(List<PeerInfo> users)? onUserListUpdated;
-  Function(String from, String avatar, Map<String, dynamic>? payload)? onCallRequest;
+  Function(String from, String avatar, Map<String, dynamic>? payload)?
+      onCallRequest;
   Function(String from)? onCallAccepted;
   Function(String from)? onCallRejected;
   Function(String from, String sdp)? onOfferReceived;
   Function(String from, String sdp)? onAnswerReceived;
   Function(String from, Map<String, dynamic> candidate)? onIceCandidateReceived;
   Function(String from)? onHangupReceived;
-  Function(String target)? onUserOffline;
+  Function(String target, String message)? onUserOffline;
+  Function(Map<String, dynamic>? config)? onTurnConfig;
   Function(String error)? onErrorOccurred;
 
   bool get isConnected => _isConnected;
@@ -57,7 +62,16 @@ class SignalingService {
   String get myAvatar => _myAvatar;
   String? get serverUrl => _serverUrl;
 
-  Future<void> connect(String url, String userId, {String avatar = 'pilot'}) async {
+  /// Optional shared access token; when set, it is attached to registration.
+  void setAuthToken(String? token) {
+    _authToken = (token == null || token.trim().isEmpty) ? null : token.trim();
+  }
+
+  Future<void> connect(
+    String url,
+    String userId, {
+    String avatar = 'pilot',
+  }) async {
     _serverUrl = url;
     _myUserId = userId;
     _myAvatar = avatar;
@@ -72,7 +86,7 @@ class SignalingService {
       final uri = Uri.parse(url);
       _channel = WebSocketChannel.connect(uri);
 
-      _channel!.stream.listen(
+      _channelSub = _channel!.stream.listen(
         (message) {
           _handleMessage(message.toString());
         },
@@ -98,19 +112,22 @@ class SignalingService {
         cancelOnError: true,
       );
 
-      // Send registration message
-      _send({
+      // Send registration message; 'connected' status is only emitted once the
+      // server acknowledges with 'registered'.
+      _registrationPending = true;
+      final sent = _send({
         'type': 'register',
         'userId': _myUserId,
         'avatar': _myAvatar,
+        if (_authToken != null) 'token': _authToken,
       });
-
-      _isConnected = true;
-      _reconnectAttempts = 0;
-      _isReconnecting = false;
-      _statusController.add(SignalingStatus.connected);
+      if (!sent) {
+        _registrationPending = false;
+        throw StateError('Failed to send registration message');
+      }
     } catch (e) {
       _isConnected = false;
+      _registrationPending = false;
       if (!_isManualDisconnect) {
         _scheduleReconnect();
       } else {
@@ -126,14 +143,17 @@ class SignalingService {
     _statusController.add(SignalingStatus.reconnecting);
 
     _reconnectAttempts++;
-    final delaySec = min(5, max(1, (_reconnectAttempts * 1.5).toInt()));
-    print('[Signaling] Network switched or lost. Auto-reconnecting in $delaySec s (Attempt $_reconnectAttempts)...');
+    // Exponential backoff capped at 30 seconds.
+    final delaySec = min(30, max(1, pow(2, _reconnectAttempts).toInt()));
+    print(
+        '[Signaling] Network switched or lost. Auto-reconnecting in $delaySec s '
+        '(attempt $_reconnectAttempts)...');
 
     _reconnectTimer?.cancel();
-    _reconnectTimer = Timer(Duration(seconds: delaySec), () async {
+    _reconnectTimer = Timer(Duration(seconds: delaySec), () {
       _isReconnecting = false;
       if (!_isManualDisconnect && _serverUrl != null && _myUserId != null) {
-        await connect(_serverUrl!, _myUserId!, avatar: _myAvatar);
+        connect(_serverUrl!, _myUserId!, avatar: _myAvatar);
       }
     });
   }
@@ -151,6 +171,7 @@ class SignalingService {
         'type': 'register',
         'userId': _myUserId,
         'avatar': _myAvatar,
+        if (_authToken != null) 'token': _authToken,
       });
     }
   }
@@ -161,8 +182,9 @@ class SignalingService {
     }
   }
 
-  void sendCallRequest(String targetUserId) {
-    _send({
+  bool sendCallRequest(String targetUserId) {
+    if (!_isConnected) return false;
+    return _send({
       'type': 'call_request',
       'to': targetUserId,
       'payload': {},
@@ -217,12 +239,16 @@ class SignalingService {
     });
   }
 
-  void _send(Map<String, dynamic> data) {
-    if (_channel != null) {
-      try {
-        final jsonString = jsonEncode(data);
-        _channel!.sink.add(jsonString);
-      } catch (_) {}
+  bool _send(Map<String, dynamic> data) {
+    final channel = _channel;
+    if (channel == null) return false;
+    try {
+      final jsonString = jsonEncode(data);
+      channel.sink.add(jsonString);
+      return true;
+    } catch (e) {
+      print('[Signaling] Failed to send message: $e');
+      return false;
     }
   }
 
@@ -252,8 +278,15 @@ class SignalingService {
 
       switch (type) {
         case 'registered':
+          _registrationPending = false;
+          _isConnected = true;
+          _reconnectAttempts = 0;
+          _isReconnecting = false;
+          _statusController.add(SignalingStatus.connected);
           final online = _parsePeerList(data['onlineUsers']);
           onRegistered?.call(data['userId']?.toString() ?? '', online);
+          // Request time-limited TURN credentials (TURN REST API).
+          _send({'type': 'get_turn'});
           break;
 
         case 'user_joined':
@@ -307,11 +340,24 @@ class SignalingService {
           break;
 
         case 'user_offline':
-          onUserOffline?.call(data['target']?.toString() ?? '');
+          onUserOffline?.call(
+            data['target']?.toString() ?? '',
+            data['message']?.toString() ?? '',
+          );
+          break;
+
+        case 'turn_config':
+          onTurnConfig?.call(data['turn'] as Map<String, dynamic>?);
           break;
 
         case 'error':
-          onErrorOccurred?.call(data['message']?.toString() ?? 'Unknown error');
+          final errMsg = data['message']?.toString() ?? 'Unknown error';
+          if (_registrationPending) {
+            _registrationPending = false;
+            _isConnected = false;
+            _statusController.add(SignalingStatus.error);
+          }
+          onErrorOccurred?.call(errMsg);
           break;
       }
     } catch (e) {
@@ -320,6 +366,8 @@ class SignalingService {
   }
 
   Future<void> _closeChannelOnly() async {
+    await _channelSub?.cancel();
+    _channelSub = null;
     try {
       await _channel?.sink.close();
     } catch (_) {}
@@ -339,8 +387,8 @@ class SignalingService {
     _statusController.add(SignalingStatus.disconnected);
   }
 
-  void dispose() {
-    disconnect();
-    _statusController.close();
+  Future<void> dispose() async {
+    await disconnect();
+    await _statusController.close();
   }
 }

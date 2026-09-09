@@ -19,12 +19,19 @@ class MainActivity : FlutterActivity() {
                         action = CallForegroundService.ACTION_START
                         putExtra(CallForegroundService.EXTRA_PEER_ID, peerId)
                     }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
+                    try {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            startForegroundService(intent)
+                        } else {
+                            startService(intent)
+                        }
+                        result.success(true)
+                    } catch (e: Exception) {
+                        // Foreground service start may be restricted when the app
+                        // is in the background (Android 12+). The call can still
+                        // proceed without the keep-alive service.
+                        result.success(false)
                     }
-                    result.success(true)
                 }
                 "stopCallService" -> {
                     val intent = Intent(this, CallForegroundService::class.java).apply {

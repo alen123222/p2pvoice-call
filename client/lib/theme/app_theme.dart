@@ -20,6 +20,13 @@ class AppTheme {
   static const Color skyAccent = Color(0xFF0284C7); // Sky 600
   static const Color skyButton = Color(0xFF0284C7);
 
+  // Shared semantic tokens (identical in both themes)
+  static const Color success = Color(0xFF10B981);
+  static const Color warning = Color(0xFFF59E0B);
+  static const Color danger = Color(0xFFEF4444);
+  static const Color primaryButtonDark = Color(0xFF2563EB);
+  static const Color callGreen = Color(0xFF059669);
+
   static ThemeData getTheme(bool isDark) {
     if (isDark) {
       return ThemeData(
@@ -36,6 +43,7 @@ class AppTheme {
           primary: darkAccent,
           surface: darkCard,
           onSurface: darkTextPrimary,
+          error: danger,
         ),
       );
     } else {
@@ -54,6 +62,7 @@ class AppTheme {
           primary: skyAccent,
           surface: skyCard,
           onSurface: skyTextPrimary,
+          error: danger,
         ),
       );
     }
