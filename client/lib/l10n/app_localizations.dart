@@ -126,6 +126,7 @@ class AppLocalizations {
   String get resetBackground => t('resetBackground');
   String get backgroundSaved => t('backgroundSaved');
   String get backgroundReset => t('backgroundReset');
+  String get backgroundError => t('backgroundError');
 
   // ----- Errors / notices -----
   String get errorEmptyTarget => t('errorEmptyTarget');
@@ -221,6 +222,7 @@ class AppLocalizations {
       'resetBackground': 'Reset to default',
       'backgroundSaved': 'Background updated',
       'backgroundReset': 'Background reset',
+      'backgroundError': 'Failed to update background',
       'errorEmptyTarget': 'Please enter the peer user ID',
       'errorSelfCall': 'Cannot call yourself',
       'errorNotConnected': 'Not connected to the signaling server',
@@ -302,6 +304,7 @@ class AppLocalizations {
       'resetBackground': '恢复默认',
       'backgroundSaved': '背景已更新',
       'backgroundReset': '背景已恢复默认',
+      'backgroundError': '设置背景失败',
       'errorEmptyTarget': '请输入对方的用户 ID',
       'errorSelfCall': '不能呼叫自己',
       'errorNotConnected': '未连接到信令服务器',
@@ -384,6 +387,7 @@ class AppLocalizations {
       'resetBackground': 'Rétablir par défaut',
       'backgroundSaved': 'Arrière-plan mis à jour',
       'backgroundReset': 'Arrière-plan réinitialisé',
+      'backgroundError': "Échec de la mise à jour de l'arrière-plan",
       'errorEmptyTarget': "Saisissez l'ID du correspondant",
       'errorSelfCall': 'Impossible de s’appeler soi-même',
       'errorNotConnected': 'Non connecté au serveur de signalisation',

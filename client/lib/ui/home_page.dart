@@ -97,11 +97,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       _signalingService.setAuthToken(savedToken);
     }
     if (savedBackground != null && savedBackground.isNotEmpty) {
-      _backgroundPath = savedBackground;
+      final file = File(savedBackground);
+      if (file.existsSync()) {
+        _backgroundPath = savedBackground;
+      } else {
+        await prefs.remove('background_path');
+        _backgroundPath = null;
+      }
     }
 
     if (mounted) setState(() {});
     _connectSignaling();
+  }
+
+  Color _getCardColor(bool isDark) {
+    if (_backgroundPath != null && File(_backgroundPath!).existsSync()) {
+      return isDark
+          ? AppTheme.darkCard.withValues(alpha: 0.85)
+          : AppTheme.skyCard.withValues(alpha: 0.90);
+    }
+    return isDark ? AppTheme.darkCard : AppTheme.skyCard;
   }
 
   void _initServices() {
@@ -252,38 +267,69 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   }
 
   // ----- Background image handling -----
-  Future<void> _pickBackground() async {
+  Future<void> _pickBackground({StateSetter? setDialogState}) async {
     final l10n = _l10n();
     try {
       final picker = ImagePicker();
-      final XFile? file = await picker.pickImage(source: ImageSource.gallery);
+      final XFile? file = await picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1920,
+        maxHeight: 1920,
+        imageQuality: 90,
+      );
       if (file == null) return;
 
       final ext = file.path.contains('.')
           ? file.path.substring(file.path.lastIndexOf('.'))
           : '.jpg';
       final dir = await getApplicationDocumentsDirectory();
-      final dest = File('${dir.path}/custom_background$ext');
+
+      // Delete old background file on disk to avoid stale / orphan files
+      if (_backgroundPath != null) {
+        final oldFile = File(_backgroundPath!);
+        if (oldFile.existsSync()) {
+          try {
+            await oldFile.delete();
+          } catch (_) {}
+        }
+        await FileImage(oldFile).evict();
+      }
+
+      // Unique timestamp prevents Flutter's ImageCache key collision
+      final dest = File(
+          '${dir.path}/custom_bg_${DateTime.now().millisecondsSinceEpoch}$ext');
       await File(file.path).copy(dest.path);
+      await FileImage(dest).evict();
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('background_path', dest.path);
       if (mounted) {
         setState(() => _backgroundPath = dest.path);
+        setDialogState?.call(() {});
         _showSnack(l10n.backgroundSaved);
       }
     } catch (e) {
       print('[Background] Failed to set background: $e');
-      if (mounted) _showSnack(l10n.callFailed);
+      if (mounted) _showSnack(l10n.backgroundError);
     }
   }
 
-  Future<void> _resetBackground() async {
+  Future<void> _resetBackground({StateSetter? setDialogState}) async {
     final l10n = _l10n();
+    if (_backgroundPath != null) {
+      final oldFile = File(_backgroundPath!);
+      if (oldFile.existsSync()) {
+        try {
+          await oldFile.delete();
+        } catch (_) {}
+      }
+      await FileImage(oldFile).evict();
+    }
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('background_path');
     if (mounted) {
       setState(() => _backgroundPath = null);
+      setDialogState?.call(() {});
       _showSnack(l10n.backgroundReset);
     }
   }
@@ -312,7 +358,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         return Scaffold(
           backgroundColor: isDark ? AppTheme.darkBg : AppTheme.skyBg,
           appBar: AppBar(
-            backgroundColor: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+            backgroundColor: _getCardColor(isDark),
             elevation: isDark ? 0 : 1,
             title: Row(
               children: [
@@ -368,7 +414,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           ),
           body: Stack(
             children: [
-              if (_backgroundPath != null) ...[
+              if (_backgroundPath != null &&
+                  File(_backgroundPath!).existsSync()) ...[
                 Positioned.fill(
                   child: Image.file(
                     File(_backgroundPath!),
@@ -379,8 +426,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 Positioned.fill(
                   child: Container(
                     color: isDark
-                        ? Colors.black.withValues(alpha: 0.45)
-                        : Colors.white.withValues(alpha: 0.35),
+                        ? Colors.black.withValues(alpha: 0.40)
+                        : Colors.white.withValues(alpha: 0.30),
                   ),
                 ),
               ],
@@ -478,7 +525,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+        color: _getCardColor(isDark),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isDark ? AppTheme.darkBorder : AppTheme.skyBorder,
@@ -634,7 +681,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     return Container(
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+        color: _getCardColor(isDark),
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: isDark ? AppTheme.darkBorder : AppTheme.skyBorder,
@@ -835,7 +882,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                 padding:
                     const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                 decoration: BoxDecoration(
-                  color: isDark ? AppTheme.darkCard : AppTheme.skyCard,
+                  color: _getCardColor(isDark),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: isDark ? AppTheme.darkBorder : AppTheme.skyBorder,
@@ -1439,32 +1486,82 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                     ),
                     const SizedBox(height: 16),
                     _settingsLabel(l10n.backgroundLabel, isDark),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.image_outlined),
-                            label: Text(l10n.chooseImage),
-                            onPressed: () async {
-                              Navigator.pop(context);
-                              await _pickBackground();
-                            },
+                    const SizedBox(height: 8),
+                    if (_backgroundPath != null &&
+                        File(_backgroundPath!).existsSync()) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: isDark
+                              ? Colors.white.withValues(alpha: 0.06)
+                              : Colors.black.withValues(alpha: 0.04),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: isDark
+                                ? AppTheme.darkBorder
+                                : AppTheme.skyBorder,
                           ),
                         ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            icon: const Icon(Icons.restore),
-                            label: Text(l10n.resetBackground),
-                            onPressed: () async {
-                              Navigator.pop(context);
-                              await _resetBackground();
-                            },
+                        child: Row(
+                          children: [
+                            ClipRRect(
+                              borderRadius: BorderRadius.circular(6),
+                              child: Image.file(
+                                File(_backgroundPath!),
+                                width: 42,
+                                height: 42,
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                l10n.backgroundSaved,
+                                style: TextStyle(
+                                  color: isDark
+                                      ? Colors.white70
+                                      : AppTheme.skyTextSecondary,
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.edit_outlined, size: 20),
+                              tooltip: l10n.chooseImage,
+                              onPressed: () async {
+                                await _pickBackground(
+                                    setDialogState: setDialogState);
+                              },
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline,
+                                  size: 20, color: Colors.redAccent),
+                              tooltip: l10n.resetBackground,
+                              onPressed: () async {
+                                await _resetBackground(
+                                    setDialogState: setDialogState);
+                              },
+                            ),
+                          ],
+                        ),
+                      ),
+                    ] else ...[
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          minimumSize: const Size.fromHeight(42),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                      ],
-                    ),
+                        icon: const Icon(Icons.image_outlined, size: 18),
+                        label: Text(l10n.chooseImage),
+                        onPressed: () async {
+                          await _pickBackground(setDialogState: setDialogState);
+                        },
+                      ),
+                    ],
                     const SizedBox(height: 12),
                     Text(
                       l10n.settingsNote,
