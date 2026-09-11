@@ -1,8 +1,9 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../../models/avatar_model.dart';
 
 /// A reusable circular avatar used across the identity card, peer list,
-/// incoming-call overlay and active-call overlay.
+/// incoming-call overlay and active-call overlay. Supports both emoji and custom photo avatars.
 class AvatarCircle extends StatelessWidget {
   const AvatarCircle({
     super.key,
@@ -23,6 +24,10 @@ class AvatarCircle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasCustomImage = avatar.imagePath != null &&
+        avatar.imagePath!.isNotEmpty &&
+        File(avatar.imagePath!).existsSync();
+
     final circle = Container(
       width: size,
       height: size,
@@ -51,10 +56,23 @@ class AvatarCircle extends StatelessWidget {
               ],
       ),
       alignment: Alignment.center,
-      child: Text(
-        avatar.emoji,
-        style: TextStyle(fontSize: emojiSize ?? size * 0.52),
-      ),
+      child: hasCustomImage
+          ? ClipOval(
+              child: Image.file(
+                File(avatar.imagePath!),
+                width: size,
+                height: size,
+                fit: BoxFit.cover,
+                errorBuilder: (context, error, stackTrace) => Text(
+                  avatar.emoji,
+                  style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+                ),
+              ),
+            )
+          : Text(
+              avatar.emoji,
+              style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+            ),
     );
 
     if (!showOnlineDot) return circle;
