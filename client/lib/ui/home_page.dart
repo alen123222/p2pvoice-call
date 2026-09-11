@@ -422,6 +422,11 @@ class _HomePageState extends State<HomePage>
                   statusBarColor: Colors.transparent,
                   statusBarIconBrightness:
                       isDark ? Brightness.light : Brightness.dark,
+                  systemNavigationBarColor: Colors.transparent,
+                  systemNavigationBarDividerColor: Colors.transparent,
+                  systemNavigationBarIconBrightness:
+                      isDark ? Brightness.light : Brightness.dark,
+                  systemNavigationBarContrastEnforced: false,
                 ),
                 title: Row(
                   children: [
@@ -532,10 +537,15 @@ class _HomePageState extends State<HomePage>
 
                   // 3. 全新重构的前台主界面 (清晰分区)
                   SafeArea(
+                    bottom: false,
                     child: SingleChildScrollView(
                       physics: const BouncingScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 16, vertical: 8),
+                      padding: EdgeInsets.fromLTRB(
+                        16,
+                        8,
+                        16,
+                        MediaQuery.of(context).padding.bottom + 24,
+                      ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
