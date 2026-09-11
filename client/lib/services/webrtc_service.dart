@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 import '../models/call_state.dart';
@@ -283,7 +284,7 @@ class WebRTCService {
   }
 
   void _handleCallFailure(Object e) {
-    print('[WebRTC] Call failure: $e');
+    debugPrint('[WebRTC] Call failure: $e');
     _cancelRingTimer();
     if (_currentPeerId != null) {
       signalingService.sendHangup(_currentPeerId!);

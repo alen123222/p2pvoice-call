@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 import '../models/call_state.dart';
 
@@ -33,6 +34,7 @@ class SignalingService {
   bool _isManualDisconnect = false;
 
   Timer? _reconnectTimer;
+  Timer? _heartbeatTimer;
   int _reconnectAttempts = 0;
   bool _isReconnecting = false;
 
@@ -92,7 +94,7 @@ class SignalingService {
         },
         onDone: () {
           _isConnected = false;
-          print('[Signaling] WebSocket connection closed.');
+          debugPrint('[Signaling] WebSocket connection closed.');
           if (!_isManualDisconnect) {
             _scheduleReconnect();
           } else {
@@ -101,7 +103,7 @@ class SignalingService {
         },
         onError: (err) {
           _isConnected = false;
-          print('[Signaling] WebSocket error: $err');
+          debugPrint('[Signaling] WebSocket error: $err');
           if (!_isManualDisconnect) {
             _scheduleReconnect();
           } else {
@@ -145,7 +147,7 @@ class SignalingService {
     _reconnectAttempts++;
     // Exponential backoff capped at 30 seconds.
     final delaySec = min(30, max(1, pow(2, _reconnectAttempts).toInt()));
-    print(
+    debugPrint(
         '[Signaling] Network switched or lost. Auto-reconnecting in $delaySec s '
         '(attempt $_reconnectAttempts)...');
 
@@ -247,7 +249,7 @@ class SignalingService {
       channel.sink.add(jsonString);
       return true;
     } catch (e) {
-      print('[Signaling] Failed to send message: $e');
+      debugPrint('[Signaling] Failed to send message: $e');
       return false;
     }
   }
@@ -283,10 +285,15 @@ class SignalingService {
           _reconnectAttempts = 0;
           _isReconnecting = false;
           _statusController.add(SignalingStatus.connected);
+          _startHeartbeat();
           final online = _parsePeerList(data['onlineUsers']);
           onRegistered?.call(data['userId']?.toString() ?? '', online);
           // Request time-limited TURN credentials (TURN REST API).
           _send({'type': 'get_turn'});
+          break;
+
+        case 'pong':
+          // Keep-alive heartbeat acknowledged by signaling server
           break;
 
         case 'user_joined':
@@ -361,11 +368,36 @@ class SignalingService {
           break;
       }
     } catch (e) {
-      print('[Signaling] Parse error: $e');
+      debugPrint('[Signaling] Parse error: $e');
+    }
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
+      if (_isConnected) {
+        final sent = _send({'type': 'ping'});
+        if (!sent) {
+          _scheduleReconnect();
+        }
+      } else if (!_isManualDisconnect && _serverUrl != null && _myUserId != null) {
+        checkAndReconnect();
+      }
+    });
+  }
+
+  void checkAndReconnect() {
+    if (!_isConnected &&
+        !_isManualDisconnect &&
+        _serverUrl != null &&
+        _myUserId != null) {
+      connect(_serverUrl!, _myUserId!, avatar: _myAvatar);
     }
   }
 
   Future<void> _closeChannelOnly() async {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     await _channelSub?.cancel();
     _channelSub = null;
     try {
@@ -378,6 +410,8 @@ class SignalingService {
   Future<void> disconnect() async {
     _isManualDisconnect = true;
     _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     _isReconnecting = false;
 
     // Send unregister notice to server

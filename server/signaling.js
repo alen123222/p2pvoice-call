@@ -240,6 +240,12 @@ wss.on('connection', (ws, req) => {
         break;
       }
 
+      case 'ping': {
+        ws.isAlive = true;
+        ws.send(JSON.stringify({ type: 'pong' }));
+        break;
+      }
+
       default:
         console.warn(`[Signaling] Unknown message type: ${type}`);
     }

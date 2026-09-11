@@ -23,7 +23,8 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
+class _HomePageState extends State<HomePage>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   late final SignalingService _signalingService;
   late final WebRTCService _webrtcService;
 
@@ -55,6 +56,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _targetIdController.addListener(() {
       if (mounted) setState(() {});
     });
@@ -63,12 +65,24 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _loadPreferences();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _signalingService.checkAndReconnect();
+      if (_signalingService.isConnected) {
+        _signalingService.refreshUsers();
+      }
+    }
+  }
+
   Future<void> _requestPermissions() async {
     await [
       Permission.microphone,
       Permission.bluetoothConnect,
       Permission.notification,
     ].request();
+    // Keep alive in background so online state is preserved
+    ForegroundServiceManager.startKeepAliveService();
   }
 
   Future<void> _loadPreferences() async {
@@ -140,6 +154,16 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     _signalingService = SignalingService();
     _webrtcService = WebRTCService(signalingService: _signalingService);
 
+    ForegroundServiceManager.initialize(
+      handleCallAction: (action, peerId) {
+        if (action == 'answer') {
+          _webrtcService.acceptCall();
+        } else if (action == 'reject') {
+          _webrtcService.rejectCall();
+        }
+      },
+    );
+
     // Listen to signaling status
     _signalingSub = _signalingService.statusStream.listen((status) {
       if (mounted) {
@@ -152,12 +176,17 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       if (mounted) {
         setState(() {
           _callStatus = status;
-          if (status == CallStatus.connected) {
+          if (status == CallStatus.incoming) {
+            final caller = _webrtcService.currentPeerId ?? '未知呼叫';
+            ForegroundServiceManager.showIncomingCallNotification(caller);
+          } else if (status == CallStatus.connected) {
             _startCallTimer();
+            ForegroundServiceManager.cancelIncomingCallNotification();
             ForegroundServiceManager.startCallForeground(
                 _webrtcService.currentPeerId ?? _l10n().unknownUser);
           } else if (status == CallStatus.ended || status == CallStatus.idle) {
             _stopCallTimer();
+            ForegroundServiceManager.cancelIncomingCallNotification();
             ForegroundServiceManager.stopCallForeground();
           }
         });
@@ -187,6 +216,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
           _onlinePeers = users;
         });
       }
+      ForegroundServiceManager.startKeepAliveService();
     };
 
     _signalingService.onUserJoined = (user) {
@@ -326,7 +356,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
         _showSnack(l10n.backgroundSaved);
       }
     } catch (e) {
-      print('[Background] Failed to set background: $e');
+      debugPrint('[Background] Failed to set background: $e');
       if (mounted) _showSnack(l10n.backgroundError);
     }
   }
@@ -353,10 +383,12 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _signalingSub?.cancel();
     _callStatusSub?.cancel();
     _iceStateSub?.cancel();
     _stopCallTimer();
+    ForegroundServiceManager.cancelIncomingCallNotification();
     ForegroundServiceManager.stopCallForeground();
     _webrtcService.dispose();
     _signalingService.dispose();
