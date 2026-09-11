@@ -40,6 +40,9 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   List<PeerInfo> _onlinePeers = [];
   String _iceState = 'Idle';
   String? _backgroundPath;
+  double _bgScale = 1.0;
+  String _bgFit = 'cover';
+  bool _autoFitBackground = true;
   bool _copiedJustNow = false;
 
   Timer? _callDurationTimer;
@@ -111,8 +114,26 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
       }
     }
 
+    _bgScale = prefs.getDouble('bg_scale') ?? 1.0;
+    _bgFit = prefs.getString('bg_fit') ?? 'cover';
+    _autoFitBackground = prefs.getBool('bg_auto_fit') ?? true;
+
     if (mounted) setState(() {});
     _connectSignaling();
+  }
+
+  BoxFit _getBoxFit(String mode) {
+    switch (mode) {
+      case 'fill':
+        return BoxFit.fill;
+      case 'fitWidth':
+        return BoxFit.fitWidth;
+      case 'fitHeight':
+        return BoxFit.fitHeight;
+      case 'cover':
+      default:
+        return BoxFit.cover;
+    }
   }
 
   void _initServices() {
@@ -360,6 +381,8 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
               backgroundColor:
                   isDark ? pack.darkBgEnd : pack.lightBgStart,
               extendBodyBehindAppBar: true,
+              extendBody: true,
+              resizeToAvoidBottomInset: false,
               appBar: AppBar(
                 backgroundColor: Colors.transparent,
                 elevation: 0,
@@ -442,15 +465,28 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   // 1. 当前主题的双色专属弥散背景
                   _buildAmbientBackground(isDark, pack),
 
-                  // 2. 自定义背景图片 (若有设置)
+                  // 2. 自定义背景图片 (支持自动无缝缩放充满屏幕，消除边缘留白)
                   if (_backgroundPath != null &&
                       File(_backgroundPath!).existsSync()) ...[
                     Positioned.fill(
-                      child: Image.file(
-                        File(_backgroundPath!),
-                        fit: BoxFit.cover,
-                        errorBuilder: (context, error, stack) =>
-                            const SizedBox(),
+                      child: SizedBox.expand(
+                        child: ClipRect(
+                          child: Transform.scale(
+                            scale: _autoFitBackground
+                                ? (_bgScale < 1.06 ? 1.06 : _bgScale)
+                                : _bgScale,
+                            alignment: Alignment.center,
+                            child: Image.file(
+                              File(_backgroundPath!),
+                              fit: _getBoxFit(_bgFit),
+                              width: double.infinity,
+                              height: double.infinity,
+                              alignment: Alignment.center,
+                              errorBuilder: (context, error, stack) =>
+                                  const SizedBox(),
+                            ),
+                          ),
+                        ),
                       ),
                     ),
                     Positioned.fill(
@@ -653,7 +689,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   /// 卡片 1：个人身份与设备卡片 (半透明毛玻璃)
   Widget _buildMyIdentityCard(bool isDark, ThemeColorPack pack) {
     final l10n = _l10n();
-    final avatarItem = AvatarManager.getById(_myAvatar);
+    final avatarItem = AvatarManager.getById(_myAvatar, isMe: true);
 
     return GlassCard(
       isDark: isDark,
@@ -1169,7 +1205,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                   else
                     Column(
                       children: _onlinePeers.map((peer) {
-                        final peerAvatar = AvatarManager.getById(peer.avatar);
+                        final peerAvatar = AvatarManager.getById(
+                          peer.avatar,
+                          isMe: false,
+                          peerSeed: peer.userId,
+                        );
                         return Container(
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.symmetric(
@@ -1209,7 +1249,7 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                                     ),
                                     const SizedBox(height: 2),
                                     Text(
-                                      '${l10n.avatarName(peer.avatar)} · 点击开始直连',
+                                      '${peerAvatar.name} · 点击开始直连',
                                       style: const TextStyle(
                                         color: Color(0xFF64748B),
                                         fontSize: 11,
@@ -1525,7 +1565,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _buildIncomingCallOverlay() {
     final l10n = _l10n();
     final caller = _webrtcService.currentPeerId ?? l10n.unknownUser;
-    final callerAvatar = AvatarManager.getById(_webrtcService.remotePeerAvatar);
+    final callerAvatar = AvatarManager.getById(
+      _webrtcService.remotePeerAvatar,
+      isMe: false,
+      peerSeed: _webrtcService.currentPeerId,
+    );
 
     return Container(
       color: Colors.black.withValues(alpha: 0.94),
@@ -1619,7 +1663,11 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
   Widget _buildActiveCallOverlay() {
     final l10n = _l10n();
     final peer = _webrtcService.currentPeerId ?? '';
-    final peerAvatar = AvatarManager.getById(_webrtcService.remotePeerAvatar);
+    final peerAvatar = AvatarManager.getById(
+      _webrtcService.remotePeerAvatar,
+      isMe: false,
+      peerSeed: _webrtcService.currentPeerId,
+    );
     final isConnected = _callStatus == CallStatus.connected;
     final isDirect = _webrtcService.connectionType.contains('穿透') ||
         _webrtcService.connectionType.contains('SRTP');
@@ -2188,6 +2236,45 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
     ).whenComplete(controller.dispose);
   }
 
+  Widget _buildBgFitChip({
+    required String label,
+    required String mode,
+    required String current,
+    required bool isDark,
+    required ThemeColorPack pack,
+    required VoidCallback onTap,
+  }) {
+    final isSelected = mode == current;
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? pack.primary.withValues(alpha: isDark ? 0.25 : 0.15)
+              : (isDark ? Colors.white10 : const Color(0xFFE2E8F0)),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: isSelected
+                ? pack.primary
+                : (isDark ? Colors.white12 : Colors.black12),
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+            color: isSelected
+                ? (isDark ? pack.primary : const Color(0xFF0F172A))
+                : (isDark ? Colors.white70 : const Color(0xFF475569)),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _settingsSectionHeader({
     required IconData icon,
     required String title,
@@ -2497,123 +2584,239 @@ class _HomePageState extends State<HomePage> with TickerProviderStateMixin {
                         ),
                         const SizedBox(height: 10),
 
-                        // 暗色模式切换条
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 14, vertical: 10),
-                          decoration: BoxDecoration(
-                            color: isDark
-                                ? Colors.white.withValues(alpha: 0.05)
-                                : const Color(0xFFF8FAFC),
-                            borderRadius: BorderRadius.circular(14),
-                            border: Border.all(
-                              color: isDark
-                                  ? Colors.white.withValues(alpha: 0.08)
-                                  : Colors.black.withValues(alpha: 0.06),
-                            ),
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              Row(
-                                children: [
-                                  Icon(
-                                    isDark
-                                        ? Icons.dark_mode_rounded
-                                        : Icons.light_mode_rounded,
-                                    size: 19,
-                                    color: isDark
-                                        ? currentThemePack.primary
-                                        : currentThemePack.secondary,
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Text(
-                                    isDark ? '深色模式 (已开启)' : '浅色模式 (已开启)',
-                                    style: TextStyle(
-                                      fontSize: 13.5,
-                                      fontWeight: FontWeight.w600,
-                                      color: isDark
-                                          ? currentThemePack.darkTextPrimary
-                                          : currentThemePack.lightTextPrimary,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              Switch(
-                                value: isDark,
-                                activeThumbColor: currentThemePack.primary,
-                                onChanged: (val) async {
-                                  isDarkModeNotifier.value = val;
-                                  final pPrefs =
-                                      await SharedPreferences.getInstance();
-                                  await pPrefs.setBool('is_dark_mode', val);
-                                  setDialogState(() {});
-                                },
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 10),
-
-                        // 自定义壁纸
+                        // 自定义壁纸 (支持自动等比缩放消除留白与多档微调)
                         if (_backgroundPath != null &&
                             File(_backgroundPath!).existsSync()) ...[
                           Container(
-                            padding: const EdgeInsets.all(10),
+                            padding: const EdgeInsets.all(12),
                             decoration: BoxDecoration(
                               color: isDark
                                   ? Colors.white.withValues(alpha: 0.05)
                                   : const Color(0xFFF8FAFC),
-                              borderRadius: BorderRadius.circular(14),
+                              borderRadius: BorderRadius.circular(16),
                               border: Border.all(
                                 color: isDark
                                     ? Colors.white.withValues(alpha: 0.08)
                                     : Colors.black.withValues(alpha: 0.06),
                               ),
                             ),
-                            child: Row(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                ClipRRect(
-                                  borderRadius: BorderRadius.circular(8),
-                                  child: Image.file(
-                                    File(_backgroundPath!),
-                                    width: 44,
-                                    height: 44,
-                                    fit: BoxFit.cover,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Expanded(
-                                  child: Text(
-                                    l10n.backgroundSaved,
-                                    style: TextStyle(
-                                      fontSize: 13,
-                                      color: isDark
-                                          ? currentThemePack.darkTextPrimary
-                                          : currentThemePack.lightTextPrimary,
-                                      fontWeight: FontWeight.w500,
+                                Row(
+                                  children: [
+                                    ClipRRect(
+                                      borderRadius: BorderRadius.circular(8),
+                                      child: Image.file(
+                                        File(_backgroundPath!),
+                                        width: 44,
+                                        height: 44,
+                                        fit: BoxFit.cover,
+                                      ),
                                     ),
+                                    const SizedBox(width: 12),
+                                    Expanded(
+                                      child: Text(
+                                        l10n.backgroundSaved,
+                                        style: TextStyle(
+                                          fontSize: 13,
+                                          color: isDark
+                                              ? currentThemePack.darkTextPrimary
+                                              : currentThemePack.lightTextPrimary,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(Icons.edit_outlined,
+                                          size: 20),
+                                      tooltip: l10n.chooseImage,
+                                      onPressed: () async {
+                                        await _pickBackground(
+                                            setDialogState: setDialogState);
+                                      },
+                                    ),
+                                    IconButton(
+                                      icon: const Icon(
+                                          Icons.delete_outline_rounded,
+                                          size: 20,
+                                          color: Colors.redAccent),
+                                      tooltip: l10n.resetBackground,
+                                      onPressed: () async {
+                                        await _resetBackground(
+                                            setDialogState: setDialogState);
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                const Divider(height: 16),
+
+                                // 自动缩放充满 (消除留白) 开关
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Expanded(
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            '自动缩放充满 (消除留白)',
+                                            style: TextStyle(
+                                              fontSize: 12.5,
+                                              fontWeight: FontWeight.w600,
+                                              color: isDark
+                                                  ? currentThemePack.darkTextPrimary
+                                                  : currentThemePack.lightTextPrimary,
+                                            ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '自动适配各种屏幕比例，彻底消除上下左右黑白边',
+                                            style: TextStyle(
+                                              fontSize: 10.5,
+                                              color: isDark
+                                                  ? Colors.white54
+                                                  : const Color(0xFF64748B),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                    Switch(
+                                      value: _autoFitBackground,
+                                      activeThumbColor:
+                                          currentThemePack.primary,
+                                      onChanged: (val) async {
+                                        _autoFitBackground = val;
+                                        final pPrefs =
+                                            await SharedPreferences.getInstance();
+                                        await pPrefs.setBool('bg_auto_fit', val);
+                                        setState(() {});
+                                        setDialogState(() {});
+                                      },
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 10),
+
+                                // 画面适配模式
+                                Text(
+                                  '画面适配模式',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: isDark
+                                        ? Colors.white70
+                                        : const Color(0xFF475569),
                                   ),
                                 ),
-                                IconButton(
-                                  icon: const Icon(Icons.edit_outlined,
-                                      size: 20),
-                                  tooltip: l10n.chooseImage,
-                                  onPressed: () async {
-                                    await _pickBackground(
-                                        setDialogState: setDialogState);
-                                  },
+                                const SizedBox(height: 6),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 6,
+                                  children: [
+                                    _buildBgFitChip(
+                                      label: '智能裁剪充满 (无留白)',
+                                      mode: 'cover',
+                                      current: _bgFit,
+                                      isDark: isDark,
+                                      pack: currentThemePack,
+                                      onTap: () async {
+                                        _bgFit = 'cover';
+                                        final pPrefs = await SharedPreferences
+                                            .getInstance();
+                                        await pPrefs.setString('bg_fit', 'cover');
+                                        setState(() {});
+                                        setDialogState(() {});
+                                      },
+                                    ),
+                                    _buildBgFitChip(
+                                      label: '拉伸充满',
+                                      mode: 'fill',
+                                      current: _bgFit,
+                                      isDark: isDark,
+                                      pack: currentThemePack,
+                                      onTap: () async {
+                                        _bgFit = 'fill';
+                                        final pPrefs = await SharedPreferences
+                                            .getInstance();
+                                        await pPrefs.setString('bg_fit', 'fill');
+                                        setState(() {});
+                                        setDialogState(() {});
+                                      },
+                                    ),
+                                    _buildBgFitChip(
+                                      label: '等宽缩放',
+                                      mode: 'fitWidth',
+                                      current: _bgFit,
+                                      isDark: isDark,
+                                      pack: currentThemePack,
+                                      onTap: () async {
+                                        _bgFit = 'fitWidth';
+                                        final pPrefs = await SharedPreferences
+                                            .getInstance();
+                                        await pPrefs.setString(
+                                            'bg_fit', 'fitWidth');
+                                        setState(() {});
+                                        setDialogState(() {});
+                                      },
+                                    ),
+                                  ],
                                 ),
-                                IconButton(
-                                  icon: const Icon(
-                                      Icons.delete_outline_rounded,
-                                      size: 20,
-                                      color: Colors.redAccent),
-                                  tooltip: l10n.resetBackground,
-                                  onPressed: () async {
-                                    await _resetBackground(
-                                        setDialogState: setDialogState);
-                                  },
+                                const SizedBox(height: 10),
+
+                                // 画面缩放微调
+                                Row(
+                                  mainAxisAlignment:
+                                      MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Text(
+                                      '微调缩放比例',
+                                      style: TextStyle(
+                                        fontSize: 11.5,
+                                        fontWeight: FontWeight.w600,
+                                        color: isDark
+                                            ? Colors.white70
+                                            : const Color(0xFF475569),
+                                      ),
+                                    ),
+                                    Text(
+                                      '${(_bgScale * 100).toInt()}%',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold,
+                                        color: currentThemePack.primary,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                SliderTheme(
+                                  data: SliderTheme.of(context).copyWith(
+                                    activeTrackColor: currentThemePack.primary,
+                                    thumbColor: currentThemePack.primary,
+                                    inactiveTrackColor: isDark
+                                        ? Colors.white12
+                                        : Colors.black12,
+                                    trackHeight: 3.5,
+                                    thumbShape: const RoundSliderThumbShape(
+                                        enabledThumbRadius: 6),
+                                  ),
+                                  child: Slider(
+                                    value: _bgScale.clamp(1.0, 2.0),
+                                    min: 1.0,
+                                    max: 2.0,
+                                    divisions: 20,
+                                    onChanged: (val) async {
+                                      _bgScale = val;
+                                      final pPrefs = await SharedPreferences
+                                          .getInstance();
+                                      await pPrefs.setDouble('bg_scale', val);
+                                      setState(() {});
+                                      setDialogState(() {});
+                                    },
+                                  ),
                                 ),
                               ],
                             ),

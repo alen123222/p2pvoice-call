@@ -171,12 +171,53 @@ class AvatarManager {
     await save();
   }
 
-  static AvatarItem getById(String? id) {
-    if (_currentList.isEmpty) return defaultPresets[0];
-    if (id == null || id.isEmpty) return _currentList[0];
-    return _currentList.firstWhere(
-      (a) => a.id == id,
-      orElse: () => _currentList[0],
-    );
+  static AvatarItem getById(String? id, {bool isMe = false, String? peerSeed}) {
+    if (_currentList.isEmpty && defaultPresets.isEmpty) {
+      return const AvatarItem(
+        id: 'pilot',
+        name: '领航员',
+        emoji: '🚀',
+        gradient: [Color(0xFF0284C7), Color(0xFF38BDF8)],
+      );
+    }
+
+    // 1. 本人（Identity 卡片或本地头像选择）：优先从当前本地列表寻找
+    if (isMe) {
+      if (id != null && id.isNotEmpty) {
+        final found = _currentList.cast<AvatarItem?>().firstWhere(
+              (a) => a?.id == id,
+              orElse: () => null,
+            );
+        if (found != null) return found;
+      }
+      return _currentList.isNotEmpty ? _currentList[0] : defaultPresets[0];
+    }
+
+    // 2. 外部在线设备 / 对端通话用户：
+    // 严禁使用本机独有的自定义头像图片（imagePath），避免其他设备误显本机私人头像！
+    if (id != null && id.isNotEmpty) {
+      // 优先在系统内置预设中精确匹配（即使用户删除了本地预设条目，依然能正确识别远端设备）
+      final preset = defaultPresets.cast<AvatarItem?>().firstWhere(
+            (a) => a?.id == id,
+            orElse: () => null,
+          );
+      if (preset != null) return preset;
+
+      // 如果匹配到本地列表中的非自定义内置项
+      final nonCustom = _currentList.cast<AvatarItem?>().firstWhere(
+            (a) =>
+                a?.id == id && (a?.imagePath == null || a!.imagePath!.isEmpty),
+            orElse: () => null,
+          );
+      if (nonCustom != null) return nonCustom;
+    }
+
+    // 远端用户若使用的是对端自定义头像或未知 ID，使用其种子（userId/avatarId）做哈希离散，
+    // 稳定分配一个美观的系统内置预设头像，绝不显示本机的自定义相册照片。
+    final seed = (peerSeed != null && peerSeed.isNotEmpty)
+        ? peerSeed
+        : (id != null && id.isNotEmpty ? id : 'remote_peer');
+    final index = seed.hashCode.abs() % defaultPresets.length;
+    return defaultPresets[index];
   }
 }
