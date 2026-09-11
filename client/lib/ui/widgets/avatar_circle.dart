@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../../models/avatar_model.dart';
@@ -24,9 +25,39 @@ class AvatarCircle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasCustomImage = avatar.imagePath != null &&
+    final hasLocalImage = avatar.imagePath != null &&
         avatar.imagePath!.isNotEmpty &&
         File(avatar.imagePath!).existsSync();
+    final hasRemoteImage =
+        avatar.imageBase64 != null && avatar.imageBase64!.isNotEmpty;
+
+    Widget avatarContent;
+    if (hasLocalImage) {
+      avatarContent = Image.file(
+        File(avatar.imagePath!),
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        errorBuilder: (context, error, stackTrace) =>
+            Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52)),
+      );
+    } else if (hasRemoteImage) {
+      try {
+        final bytes = base64Decode(avatar.imageBase64!);
+        avatarContent = Image.memory(
+          bytes,
+          width: size,
+          height: size,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) =>
+              Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52)),
+        );
+      } catch (_) {
+        avatarContent = Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52));
+      }
+    } else {
+      avatarContent = Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52));
+    }
 
     final circle = Container(
       width: size,
@@ -56,23 +87,7 @@ class AvatarCircle extends StatelessWidget {
               ],
       ),
       alignment: Alignment.center,
-      child: hasCustomImage
-          ? ClipOval(
-              child: Image.file(
-                File(avatar.imagePath!),
-                width: size,
-                height: size,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => Text(
-                  avatar.emoji,
-                  style: TextStyle(fontSize: emojiSize ?? size * 0.52),
-                ),
-              ),
-            )
-          : Text(
-              avatar.emoji,
-              style: TextStyle(fontSize: emojiSize ?? size * 0.52),
-            ),
+      child: ClipOval(child: avatarContent),
     );
 
     if (!showOnlineDot) return circle;

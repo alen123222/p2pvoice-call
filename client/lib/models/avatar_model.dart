@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -7,6 +8,10 @@ class AvatarItem {
   final String name;
   final String emoji;
   final String? imagePath;
+
+  /// Raw base64 image data (no data-URL prefix) for avatars received from
+  /// other devices. Never persisted locally; used only for transient rendering.
+  final String? imageBase64;
   final List<Color> gradient;
 
   const AvatarItem({
@@ -14,6 +19,7 @@ class AvatarItem {
     required this.name,
     required this.emoji,
     this.imagePath,
+    this.imageBase64,
     required this.gradient,
   });
 
@@ -120,6 +126,20 @@ class AvatarManager {
 
   /// 保持向后兼容，所有获取头像列表处均返回当前列表
   static List<AvatarItem> get presets => List.unmodifiable(_currentList);
+
+  /// Reads a local image file and returns its raw base64 encoding.
+  /// Returns null if the file is missing or cannot be read.
+  static Future<String?> imageToBase64(String path) async {
+    try {
+      final file = File(path);
+      if (!file.existsSync()) return null;
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) return null;
+      return base64Encode(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// 从本地持久化加载头像列表
   static Future<void> init() async {

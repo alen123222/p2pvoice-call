@@ -63,6 +63,9 @@ class WebRTCService {
   String _remotePeerAvatar = 'pilot';
   String get remotePeerAvatar => _remotePeerAvatar;
 
+  String? _remotePeerAvatarImage;
+  String? get remotePeerAvatarImage => _remotePeerAvatarImage;
+
   WebRTCService({required this.signalingService}) {
     _bindSignalingEvents();
   }
@@ -99,7 +102,7 @@ class WebRTCService {
       }
     };
 
-    signalingService.onCallRequest = (from, avatar, payload) {
+    signalingService.onCallRequest = (from, avatar, avatarImage, payload) {
       // Auto-decline when already busy in another call.
       if (_callStatus == CallStatus.calling ||
           _callStatus == CallStatus.connected ||
@@ -109,6 +112,7 @@ class WebRTCService {
       }
       _currentPeerId = from;
       _remotePeerAvatar = avatar;
+      _remotePeerAvatarImage = avatarImage;
       _isCaller = false;
       _setCallStatus(CallStatus.incoming);
     };

@@ -36,14 +36,12 @@ class _HomePageState extends State<HomePage>
 
   String _myUserId = '';
   String _myAvatar = 'pilot';
+  String? _myAvatarImageBase64;
   SignalingStatus _signalingStatus = SignalingStatus.disconnected;
   CallStatus _callStatus = CallStatus.idle;
   List<PeerInfo> _onlinePeers = [];
   String _iceState = 'Idle';
   String? _backgroundPath;
-  double _bgScale = 1.0;
-  String _bgFit = 'cover';
-  bool _autoFitBackground = true;
   bool _copiedJustNow = false;
 
   Timer? _callDurationTimer;
@@ -108,6 +106,13 @@ class _HomePageState extends State<HomePage>
       _myAvatar = savedAvatar;
     }
 
+    // Pre-compute the base64 payload for a custom photo avatar so it can be
+    // shared with other devices via the signaling server.
+    final meAvatar = AvatarManager.getById(_myAvatar, isMe: true);
+    if (meAvatar.imagePath != null && meAvatar.imagePath!.isNotEmpty) {
+      _myAvatarImageBase64 = await AvatarManager.imageToBase64(meAvatar.imagePath!);
+    }
+
     if (savedServer != null && savedServer.isNotEmpty) {
       _serverUrlController.text = savedServer;
     }
@@ -128,26 +133,8 @@ class _HomePageState extends State<HomePage>
       }
     }
 
-    _bgScale = prefs.getDouble('bg_scale') ?? 1.0;
-    _bgFit = prefs.getString('bg_fit') ?? 'cover';
-    _autoFitBackground = prefs.getBool('bg_auto_fit') ?? true;
-
     if (mounted) setState(() {});
     _connectSignaling();
-  }
-
-  BoxFit _getBoxFit(String mode) {
-    switch (mode) {
-      case 'fill':
-        return BoxFit.fill;
-      case 'fitWidth':
-        return BoxFit.fitWidth;
-      case 'fitHeight':
-        return BoxFit.fitHeight;
-      case 'cover':
-      default:
-        return BoxFit.cover;
-    }
   }
 
   void _initServices() {
@@ -264,7 +251,8 @@ class _HomePageState extends State<HomePage>
   Future<void> _connectSignaling() async {
     final url = _serverUrlController.text.trim();
     if (url.isNotEmpty && _myUserId.isNotEmpty) {
-      await _signalingService.connect(url, _myUserId, avatar: _myAvatar);
+      await _signalingService.connect(url, _myUserId,
+          avatar: _myAvatar, avatarImage: _myAvatarImageBase64);
     }
   }
 
@@ -502,28 +490,17 @@ class _HomePageState extends State<HomePage>
                   // 1. 当前主题的双色专属弥散背景
                   _buildAmbientBackground(isDark, pack),
 
-                  // 2. 自定义背景图片 (支持自动无缝缩放充满屏幕，消除边缘留白)
+                  // 2. 自定义背景图片 (裁剪充满，无留白)
                   if (_backgroundPath != null &&
                       File(_backgroundPath!).existsSync()) ...[
                     Positioned.fill(
-                      child: SizedBox.expand(
-                        child: ClipRect(
-                          child: Transform.scale(
-                            scale: _autoFitBackground
-                                ? (_bgScale < 1.06 ? 1.06 : _bgScale)
-                                : _bgScale,
-                            alignment: Alignment.center,
-                            child: Image.file(
-                              File(_backgroundPath!),
-                              fit: _getBoxFit(_bgFit),
-                              width: double.infinity,
-                              height: double.infinity,
-                              alignment: Alignment.center,
-                              errorBuilder: (context, error, stack) =>
-                                  const SizedBox(),
-                            ),
-                          ),
-                        ),
+                      child: Image.file(
+                        File(_backgroundPath!),
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        height: double.infinity,
+                        errorBuilder: (context, error, stack) =>
+                            const SizedBox(),
                       ),
                     ),
                     Positioned.fill(
@@ -729,6 +706,22 @@ class _HomePageState extends State<HomePage>
   }
 
   /// 卡片 1：个人身份与设备卡片 (半透明毛玻璃)
+  /// Builds the avatar shown for a remote peer. If the peer shared a custom
+  /// photo (base64), it is rendered directly; otherwise fall back to the
+  /// stable preset mapping.
+  AvatarItem _buildPeerAvatar(String avatarId, String? avatarImage, String peerSeed) {
+    if (avatarImage != null && avatarImage.isNotEmpty) {
+      return AvatarItem(
+        id: avatarId,
+        name: '自定义',
+        emoji: '🖼️',
+        imageBase64: avatarImage,
+        gradient: const [Color(0xFF0284C7), Color(0xFF38BDF8)],
+      );
+    }
+    return AvatarManager.getById(avatarId, isMe: false, peerSeed: peerSeed);
+  }
+
   Widget _buildMyIdentityCard(bool isDark, ThemeColorPack pack) {
     final l10n = _l10n();
     final avatarItem = AvatarManager.getById(_myAvatar, isMe: true);
@@ -1247,11 +1240,8 @@ class _HomePageState extends State<HomePage>
                   else
                     Column(
                       children: _onlinePeers.map((peer) {
-                        final peerAvatar = AvatarManager.getById(
-                          peer.avatar,
-                          isMe: false,
-                          peerSeed: peer.userId,
-                        );
+                        final peerAvatar = _buildPeerAvatar(
+                            peer.avatar, peer.avatarImage, peer.userId);
                         return Container(
                           margin: const EdgeInsets.only(bottom: 10),
                           padding: const EdgeInsets.symmetric(
@@ -1607,10 +1597,10 @@ class _HomePageState extends State<HomePage>
   Widget _buildIncomingCallOverlay() {
     final l10n = _l10n();
     final caller = _webrtcService.currentPeerId ?? l10n.unknownUser;
-    final callerAvatar = AvatarManager.getById(
+    final callerAvatar = _buildPeerAvatar(
       _webrtcService.remotePeerAvatar,
-      isMe: false,
-      peerSeed: _webrtcService.currentPeerId,
+      _webrtcService.remotePeerAvatarImage,
+      _webrtcService.currentPeerId ?? '',
     );
 
     return Container(
@@ -1705,10 +1695,10 @@ class _HomePageState extends State<HomePage>
   Widget _buildActiveCallOverlay() {
     final l10n = _l10n();
     final peer = _webrtcService.currentPeerId ?? '';
-    final peerAvatar = AvatarManager.getById(
+    final peerAvatar = _buildPeerAvatar(
       _webrtcService.remotePeerAvatar,
-      isMe: false,
-      peerSeed: _webrtcService.currentPeerId,
+      _webrtcService.remotePeerAvatarImage,
+      _webrtcService.currentPeerId ?? '',
     );
     final isConnected = _callStatus == CallStatus.connected;
     final isDirect = _webrtcService.connectionType.contains('穿透') ||
@@ -1886,8 +1876,8 @@ class _HomePageState extends State<HomePage>
       final picker = ImagePicker();
       final pickedFile = await picker.pickImage(
         source: ImageSource.gallery,
-        maxWidth: 512,
-        maxHeight: 512,
+        maxWidth: 256,
+        maxHeight: 256,
         imageQuality: 85,
       );
       if (pickedFile == null) return;
@@ -1912,7 +1902,11 @@ class _HomePageState extends State<HomePage>
 
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('user_avatar', newId);
-      _signalingService.updateProfile(newAvatar: newId);
+
+      // Share the custom photo with other devices via the signaling server.
+      _myAvatarImageBase64 = await AvatarManager.imageToBase64(savedImage.path);
+      _signalingService.updateProfile(
+          newAvatar: newId, newAvatarImage: _myAvatarImageBase64);
 
       if (mounted) {
         _showSnack('已添加并切换为自定义头像');
@@ -2067,8 +2061,17 @@ class _HomePageState extends State<HomePage>
                                   final prefs =
                                       await SharedPreferences.getInstance();
                                   await prefs.setString('user_avatar', item.id);
+
+                                  String? avatarImage;
+                                  if (item.imagePath != null &&
+                                      item.imagePath!.isNotEmpty) {
+                                    avatarImage = await AvatarManager
+                                        .imageToBase64(item.imagePath!);
+                                  }
+                                  _myAvatarImageBase64 = avatarImage;
                                   _signalingService.updateProfile(
-                                      newAvatar: item.id);
+                                      newAvatar: item.id,
+                                      newAvatarImage: avatarImage);
                                   if (context.mounted) Navigator.pop(context);
                                 },
                                 child: Center(
@@ -2150,8 +2153,17 @@ class _HomePageState extends State<HomePage>
                                                 .getInstance();
                                         await prefs.setString(
                                             'user_avatar', other.id);
+
+                                        String? avatarImage;
+                                        if (other.imagePath != null &&
+                                            other.imagePath!.isNotEmpty) {
+                                          avatarImage = await AvatarManager
+                                              .imageToBase64(other.imagePath!);
+                                        }
+                                        _myAvatarImageBase64 = avatarImage;
                                         _signalingService.updateProfile(
-                                            newAvatar: other.id);
+                                            newAvatar: other.id,
+                                            newAvatarImage: avatarImage);
                                       }
 
                                       await AvatarManager.deleteAvatar(item.id);
@@ -2276,45 +2288,6 @@ class _HomePageState extends State<HomePage>
         ],
       ),
     ).whenComplete(controller.dispose);
-  }
-
-  Widget _buildBgFitChip({
-    required String label,
-    required String mode,
-    required String current,
-    required bool isDark,
-    required ThemeColorPack pack,
-    required VoidCallback onTap,
-  }) {
-    final isSelected = mode == current;
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: isSelected
-              ? pack.primary.withValues(alpha: isDark ? 0.25 : 0.15)
-              : (isDark ? Colors.white10 : const Color(0xFFE2E8F0)),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: isSelected
-                ? pack.primary
-                : (isDark ? Colors.white12 : Colors.black12),
-          ),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-            color: isSelected
-                ? (isDark ? pack.primary : const Color(0xFF0F172A))
-                : (isDark ? Colors.white70 : const Color(0xFF475569)),
-          ),
-        ),
-      ),
-    );
   }
 
   Widget _settingsSectionHeader({
@@ -2690,175 +2663,6 @@ class _HomePageState extends State<HomePage>
                                       },
                                     ),
                                   ],
-                                ),
-                                const Divider(height: 16),
-
-                                // 自动缩放充满 (消除留白) 开关
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Expanded(
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            '自动缩放充满 (消除留白)',
-                                            style: TextStyle(
-                                              fontSize: 12.5,
-                                              fontWeight: FontWeight.w600,
-                                              color: isDark
-                                                  ? currentThemePack.darkTextPrimary
-                                                  : currentThemePack.lightTextPrimary,
-                                            ),
-                                          ),
-                                          const SizedBox(height: 2),
-                                          Text(
-                                            '自动适配各种屏幕比例，彻底消除上下左右黑白边',
-                                            style: TextStyle(
-                                              fontSize: 10.5,
-                                              color: isDark
-                                                  ? Colors.white54
-                                                  : const Color(0xFF64748B),
-                                            ),
-                                          ),
-                                        ],
-                                      ),
-                                    ),
-                                    Switch(
-                                      value: _autoFitBackground,
-                                      activeThumbColor:
-                                          currentThemePack.primary,
-                                      onChanged: (val) async {
-                                        _autoFitBackground = val;
-                                        final pPrefs =
-                                            await SharedPreferences.getInstance();
-                                        await pPrefs.setBool('bg_auto_fit', val);
-                                        setState(() {});
-                                        setDialogState(() {});
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-
-                                // 画面适配模式
-                                Text(
-                                  '画面适配模式',
-                                  style: TextStyle(
-                                    fontSize: 11.5,
-                                    fontWeight: FontWeight.w600,
-                                    color: isDark
-                                        ? Colors.white70
-                                        : const Color(0xFF475569),
-                                  ),
-                                ),
-                                const SizedBox(height: 6),
-                                Wrap(
-                                  spacing: 8,
-                                  runSpacing: 6,
-                                  children: [
-                                    _buildBgFitChip(
-                                      label: '智能裁剪充满 (无留白)',
-                                      mode: 'cover',
-                                      current: _bgFit,
-                                      isDark: isDark,
-                                      pack: currentThemePack,
-                                      onTap: () async {
-                                        _bgFit = 'cover';
-                                        final pPrefs = await SharedPreferences
-                                            .getInstance();
-                                        await pPrefs.setString('bg_fit', 'cover');
-                                        setState(() {});
-                                        setDialogState(() {});
-                                      },
-                                    ),
-                                    _buildBgFitChip(
-                                      label: '拉伸充满',
-                                      mode: 'fill',
-                                      current: _bgFit,
-                                      isDark: isDark,
-                                      pack: currentThemePack,
-                                      onTap: () async {
-                                        _bgFit = 'fill';
-                                        final pPrefs = await SharedPreferences
-                                            .getInstance();
-                                        await pPrefs.setString('bg_fit', 'fill');
-                                        setState(() {});
-                                        setDialogState(() {});
-                                      },
-                                    ),
-                                    _buildBgFitChip(
-                                      label: '等宽缩放',
-                                      mode: 'fitWidth',
-                                      current: _bgFit,
-                                      isDark: isDark,
-                                      pack: currentThemePack,
-                                      onTap: () async {
-                                        _bgFit = 'fitWidth';
-                                        final pPrefs = await SharedPreferences
-                                            .getInstance();
-                                        await pPrefs.setString(
-                                            'bg_fit', 'fitWidth');
-                                        setState(() {});
-                                        setDialogState(() {});
-                                      },
-                                    ),
-                                  ],
-                                ),
-                                const SizedBox(height: 10),
-
-                                // 画面缩放微调
-                                Row(
-                                  mainAxisAlignment:
-                                      MainAxisAlignment.spaceBetween,
-                                  children: [
-                                    Text(
-                                      '微调缩放比例',
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.w600,
-                                        color: isDark
-                                            ? Colors.white70
-                                            : const Color(0xFF475569),
-                                      ),
-                                    ),
-                                    Text(
-                                      '${(_bgScale * 100).toInt()}%',
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.bold,
-                                        color: currentThemePack.primary,
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                                SliderTheme(
-                                  data: SliderTheme.of(context).copyWith(
-                                    activeTrackColor: currentThemePack.primary,
-                                    thumbColor: currentThemePack.primary,
-                                    inactiveTrackColor: isDark
-                                        ? Colors.white12
-                                        : Colors.black12,
-                                    trackHeight: 3.5,
-                                    thumbShape: const RoundSliderThumbShape(
-                                        enabledThumbRadius: 6),
-                                  ),
-                                  child: Slider(
-                                    value: _bgScale.clamp(1.0, 2.0),
-                                    min: 1.0,
-                                    max: 2.0,
-                                    divisions: 20,
-                                    onChanged: (val) async {
-                                      _bgScale = val;
-                                      final pPrefs = await SharedPreferences
-                                          .getInstance();
-                                      await pPrefs.setDouble('bg_scale', val);
-                                      setState(() {});
-                                      setDialogState(() {});
-                                    },
-                                  ),
                                 ),
                               ],
                             ),

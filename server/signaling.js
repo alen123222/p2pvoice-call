@@ -31,8 +31,9 @@ const TURN_SECRET = process.env.TURN_SECRET || null;
 const TURN_TTL = Number(process.env.TURN_TTL) || 3600;
 
 // Reasonable limits to prevent abuse of a single connection.
-const MAX_PAYLOAD_BYTES = 256 * 1024; // 256 KB (SDP/ICE are far smaller)
+const MAX_PAYLOAD_BYTES = 1024 * 1024; // 1 MB (accommodates base64 avatars)
 const MAX_MESSAGES_PER_SECOND = 200;
+const MAX_AVATAR_IMAGE_CHARS = 256 * 1024; // 256 KB of base64
 
 const wss = new WebSocketServer({ port: PORT, maxPayload: MAX_PAYLOAD_BYTES });
 
@@ -49,6 +50,13 @@ function isValidUserId(id) {
 
 function isValidAvatar(avatar) {
   return typeof avatar === 'string' && avatar.length > 0 && avatar.length <= 64;
+}
+
+function sanitizeAvatarImage(image) {
+  if (typeof image !== 'string') return null;
+  const trimmed = image.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_AVATAR_IMAGE_CHARS) return null;
+  return trimmed;
 }
 
 /**
@@ -127,6 +135,7 @@ wss.on('connection', (ws, req) => {
       case 'register': {
         const userId = data.userId?.trim();
         const avatar = isValidAvatar(data.avatar) ? data.avatar : 'pilot';
+        const avatarImage = sanitizeAvatarImage(data.avatarImage);
 
         if (!isValidUserId(userId)) {
           ws.send(JSON.stringify({ type: 'error', message: 'Invalid user ID' }));
@@ -141,7 +150,7 @@ wss.on('connection', (ws, req) => {
         // Clean up previous userId on the same connection if renamed
         if (currentUserId && currentUserId !== userId) {
           clients.delete(currentUserId);
-          broadcastUserStatus(currentUserId, false, clients.get(currentUserId)?.avatar);
+          broadcastUserStatus(currentUserId, false, clients.get(currentUserId));
           console.log(`[Signaling] User renamed from "${currentUserId}" to "${userId}"`);
         }
 
@@ -155,32 +164,34 @@ wss.on('connection', (ws, req) => {
         }
 
         currentUserId = userId;
-        clients.set(userId, { ws, avatar });
+        clients.set(userId, { ws, avatar, avatarImage });
         ws.userId = userId;
 
         console.log(`[Signaling] User registered: "${userId}" (Avatar: ${avatar}) (Total online: ${clients.size})`);
 
         const onlineList = Array.from(clients.entries())
           .filter(([id]) => id !== userId)
-          .map(([id, info]) => ({ userId: id, avatar: info.avatar }));
+          .map(([id, info]) => ({ userId: id, avatar: info.avatar, avatarImage: info.avatarImage || null }));
 
         ws.send(JSON.stringify({
           type: 'registered',
           userId: userId,
           avatar: avatar,
+          avatarImage: avatarImage || null,
           onlineUsers: onlineList,
         }));
 
-        broadcastUserStatus(userId, true, avatar);
+        broadcastUserStatus(userId, true, { avatar, avatarImage });
         break;
       }
 
       // 2. Explicit unregister
       case 'unregister': {
         if (currentUserId && clients.has(currentUserId)) {
+          const entry = clients.get(currentUserId);
           clients.delete(currentUserId);
           console.log(`[Signaling] User "${currentUserId}" unregistered`);
-          broadcastUserStatus(currentUserId, false);
+          broadcastUserStatus(currentUserId, false, entry);
           currentUserId = null;
         }
         break;
@@ -190,7 +201,7 @@ wss.on('connection', (ws, req) => {
       case 'get_users': {
         const onlineList = Array.from(clients.entries())
           .filter(([id]) => id !== currentUserId)
-          .map(([id, info]) => ({ userId: id, avatar: info.avatar }));
+          .map(([id, info]) => ({ userId: id, avatar: info.avatar, avatarImage: info.avatarImage || null }));
 
         ws.send(JSON.stringify({ type: 'user_list', users: onlineList }));
         break;
@@ -221,11 +232,13 @@ wss.on('connection', (ws, req) => {
 
         const targetEntry = clients.get(to);
         if (targetEntry && targetEntry.ws.readyState === WebSocket.OPEN) {
+          const sender = clients.get(currentUserId);
           targetEntry.ws.send(JSON.stringify({
             type: type,
             from: currentUserId,
             to: to,
-            avatar: clients.get(currentUserId)?.avatar || 'pilot',
+            avatar: sender?.avatar || 'pilot',
+            avatarImage: sender?.avatarImage || null,
             payload: payload,
           }));
           console.log(`[Signaling] Forwarded [${type}] from [${currentUserId}] to [${to}]`);
@@ -257,7 +270,7 @@ wss.on('connection', (ws, req) => {
       if (entry && entry.ws === ws) {
         clients.delete(currentUserId);
         console.log(`[Signaling] User "${currentUserId}" disconnected (Total online: ${clients.size})`);
-        broadcastUserStatus(currentUserId, false);
+        broadcastUserStatus(currentUserId, false, entry);
       }
     }
   });
@@ -271,11 +284,12 @@ wss.on('error', (err) => {
   console.error('[Signaling] Server error:', err.message);
 });
 
-function broadcastUserStatus(userId, isOnline, avatar = 'pilot') {
+function broadcastUserStatus(userId, isOnline, entry = {}) {
   const message = JSON.stringify({
     type: isOnline ? 'user_joined' : 'user_left',
     userId: userId,
-    avatar: avatar,
+    avatar: entry?.avatar || 'pilot',
+    avatarImage: entry?.avatarImage || null,
   });
 
   for (const [id, entry] of clients.entries()) {

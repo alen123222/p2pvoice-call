@@ -19,9 +19,12 @@ void main() {
     expect(AppLocalizations(const Locale('zh')).avatarName('pilot'), '领航员');
   });
 
-  test('AvatarManager returns a default avatar for unknown ids', () {
-    expect(AvatarManager.getById('missing').id, 'pilot');
-    expect(AvatarManager.getById(null).id, 'pilot');
+  test('AvatarManager returns a fallback avatar for unknown ids', () {
+    // Identity card (isMe) falls back to the first preset.
+    expect(AvatarManager.getById('missing', isMe: true).id, 'pilot');
+    // Remote peers get a stable hash-mapped preset (never throws).
+    final remote = AvatarManager.getById('missing', isMe: false);
+    expect(AvatarManager.defaultPresets.map((a) => a.id), contains(remote.id));
   });
 
   testWidgets('App localizes content through the MaterialApp', (tester) async {

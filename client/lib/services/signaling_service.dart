@@ -9,7 +9,10 @@ class PeerInfo {
   final String userId;
   final String avatar;
 
-  PeerInfo({required this.userId, required this.avatar});
+  /// Raw base64 image for a peer's custom avatar, or null for preset avatars.
+  final String? avatarImage;
+
+  PeerInfo({required this.userId, required this.avatar, this.avatarImage});
 
   @override
   bool operator ==(Object other) =>
@@ -28,6 +31,7 @@ class SignalingService {
   String? _serverUrl;
   String? _myUserId;
   String _myAvatar = 'pilot';
+  String? _myAvatarImage;
   String? _authToken;
   bool _isConnected = false;
   bool _registrationPending = false;
@@ -47,8 +51,8 @@ class SignalingService {
   Function(PeerInfo user)? onUserJoined;
   Function(String userId)? onUserLeft;
   Function(List<PeerInfo> users)? onUserListUpdated;
-  Function(String from, String avatar, Map<String, dynamic>? payload)?
-      onCallRequest;
+  Function(String from, String avatar, String? avatarImage,
+      Map<String, dynamic>? payload)? onCallRequest;
   Function(String from)? onCallAccepted;
   Function(String from)? onCallRejected;
   Function(String from, String sdp)? onOfferReceived;
@@ -62,6 +66,7 @@ class SignalingService {
   bool get isConnected => _isConnected;
   String? get myUserId => _myUserId;
   String get myAvatar => _myAvatar;
+  String? get myAvatarImage => _myAvatarImage;
   String? get serverUrl => _serverUrl;
 
   /// Optional shared access token; when set, it is attached to registration.
@@ -73,10 +78,12 @@ class SignalingService {
     String url,
     String userId, {
     String avatar = 'pilot',
+    String? avatarImage,
   }) async {
     _serverUrl = url;
     _myUserId = userId;
     _myAvatar = avatar;
+    _myAvatarImage = avatarImage;
     _isManualDisconnect = false;
     _reconnectTimer?.cancel();
 
@@ -121,6 +128,8 @@ class SignalingService {
         'type': 'register',
         'userId': _myUserId,
         'avatar': _myAvatar,
+        if (_myAvatarImage != null && _myAvatarImage!.isNotEmpty)
+          'avatarImage': _myAvatarImage,
         if (_authToken != null) 'token': _authToken,
       });
       if (!sent) {
@@ -155,17 +164,20 @@ class SignalingService {
     _reconnectTimer = Timer(Duration(seconds: delaySec), () {
       _isReconnecting = false;
       if (!_isManualDisconnect && _serverUrl != null && _myUserId != null) {
-        connect(_serverUrl!, _myUserId!, avatar: _myAvatar);
+        connect(_serverUrl!, _myUserId!,
+            avatar: _myAvatar, avatarImage: _myAvatarImage);
       }
     });
   }
 
-  void updateProfile({String? newUserId, String? newAvatar}) {
+  void updateProfile({String? newUserId, String? newAvatar, String? newAvatarImage}) {
     if (newUserId != null && newUserId.trim().isNotEmpty) {
       _myUserId = newUserId.trim();
     }
     if (newAvatar != null) {
       _myAvatar = newAvatar;
+      // null clears the image (e.g. switching back to a preset avatar).
+      _myAvatarImage = newAvatarImage;
     }
 
     if (_isConnected) {
@@ -173,6 +185,8 @@ class SignalingService {
         'type': 'register',
         'userId': _myUserId,
         'avatar': _myAvatar,
+        if (_myAvatarImage != null && _myAvatarImage!.isNotEmpty)
+          'avatarImage': _myAvatarImage,
         if (_authToken != null) 'token': _authToken,
       });
     }
@@ -262,6 +276,7 @@ class SignalingService {
         result.add(PeerInfo(
           userId: item['userId']?.toString() ?? '',
           avatar: item['avatar']?.toString() ?? 'pilot',
+          avatarImage: item['avatarImage']?.toString(),
         ));
       } else if (item is String) {
         result.add(PeerInfo(userId: item, avatar: 'pilot'));
@@ -276,6 +291,7 @@ class SignalingService {
       final type = data['type'] as String?;
       final from = data['from'] as String? ?? '';
       final avatar = data['avatar'] as String? ?? 'pilot';
+      final avatarImage = data['avatarImage'] as String?;
       final payload = data['payload'] as Map<String, dynamic>?;
 
       switch (type) {
@@ -300,6 +316,7 @@ class SignalingService {
           onUserJoined?.call(PeerInfo(
             userId: data['userId']?.toString() ?? '',
             avatar: data['avatar']?.toString() ?? 'pilot',
+            avatarImage: data['avatarImage']?.toString(),
           ));
           break;
 
@@ -313,7 +330,7 @@ class SignalingService {
           break;
 
         case 'call_request':
-          onCallRequest?.call(from, avatar, payload);
+          onCallRequest?.call(from, avatar, avatarImage, payload);
           break;
 
         case 'call_accepted':
@@ -391,7 +408,8 @@ class SignalingService {
         !_isManualDisconnect &&
         _serverUrl != null &&
         _myUserId != null) {
-      connect(_serverUrl!, _myUserId!, avatar: _myAvatar);
+      connect(_serverUrl!, _myUserId!,
+          avatar: _myAvatar, avatarImage: _myAvatarImage);
     }
   }
 

@@ -172,17 +172,20 @@ class CallForegroundService : Service() {
     }
 
     private fun showIncomingCallNotification(callerId: String) {
-        val fullScreenIntent = Intent(this, MainActivity::class.java).apply {
-            action = ACTION_ANSWER
+        // The content & full-screen intents must only OPEN the app so the
+        // incoming-call UI is shown. Answering must never happen implicitly,
+        // otherwise devices that honor full-screen intents will auto-answer.
+        val openIncomingIntent = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
             addCategory(Intent.CATEGORY_LAUNCHER)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
             putExtra(EXTRA_PEER_ID, callerId)
         }
 
-        val fullScreenPendingIntent = PendingIntent.getActivity(
+        val openIncomingPendingIntent = PendingIntent.getActivity(
             this,
             1,
-            fullScreenIntent,
+            openIncomingIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
@@ -223,8 +226,8 @@ class CallForegroundService : Service() {
             .setOngoing(true)
             .setSound(soundUri)
             .setVibrate(longArrayOf(0, 1000, 1000, 1000, 1000, 1000))
-            .setContentIntent(fullScreenPendingIntent)
-            .setFullScreenIntent(fullScreenPendingIntent, true)
+            .setContentIntent(openIncomingPendingIntent)
+            .setFullScreenIntent(openIncomingPendingIntent, true)
             .addAction(android.R.drawable.ic_menu_call, "接听", answerPendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "挂断", rejectPendingIntent)
             .build()
