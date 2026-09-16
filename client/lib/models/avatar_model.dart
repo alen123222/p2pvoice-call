@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -24,15 +25,16 @@ class AvatarItem {
   });
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'name': name,
-        'emoji': emoji,
-        'imagePath': imagePath,
-        'gradient': gradient.map((c) => c.toARGB32()).toList(),
-      };
+    'id': id,
+    'name': name,
+    'emoji': emoji,
+    'imagePath': imagePath,
+    'gradient': gradient.map((c) => c.toARGB32()).toList(),
+  };
 
   factory AvatarItem.fromJson(Map<String, dynamic> json) {
-    final gradList = (json['gradient'] as List<dynamic>?)
+    final gradList =
+        (json['gradient'] as List<dynamic>?)
             ?.map((e) => Color(e as int))
             .toList() ??
         const [Color(0xFF0284C7), Color(0xFF38BDF8)];
@@ -205,9 +207,9 @@ class AvatarManager {
     if (isMe) {
       if (id != null && id.isNotEmpty) {
         final found = _currentList.cast<AvatarItem?>().firstWhere(
-              (a) => a?.id == id,
-              orElse: () => null,
-            );
+          (a) => a?.id == id,
+          orElse: () => null,
+        );
         if (found != null) return found;
       }
       return _currentList.isNotEmpty ? _currentList[0] : defaultPresets[0];
@@ -218,17 +220,16 @@ class AvatarManager {
     if (id != null && id.isNotEmpty) {
       // 优先在系统内置预设中精确匹配（即使用户删除了本地预设条目，依然能正确识别远端设备）
       final preset = defaultPresets.cast<AvatarItem?>().firstWhere(
-            (a) => a?.id == id,
-            orElse: () => null,
-          );
+        (a) => a?.id == id,
+        orElse: () => null,
+      );
       if (preset != null) return preset;
 
       // 如果匹配到本地列表中的非自定义内置项
       final nonCustom = _currentList.cast<AvatarItem?>().firstWhere(
-            (a) =>
-                a?.id == id && (a?.imagePath == null || a!.imagePath!.isEmpty),
-            orElse: () => null,
-          );
+        (a) => a?.id == id && (a?.imagePath == null || a!.imagePath!.isEmpty),
+        orElse: () => null,
+      );
       if (nonCustom != null) return nonCustom;
     }
 

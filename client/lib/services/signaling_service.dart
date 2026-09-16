@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
+
 import '../models/call_state.dart';
+import '../models/input_validation.dart';
 
 class PeerInfo {
   final String userId;
@@ -26,7 +29,21 @@ class PeerInfo {
 }
 
 class SignalingService {
+  SignalingService({
+    this.heartbeatInterval = const Duration(seconds: 15),
+    this.heartbeatTimeout = const Duration(seconds: 40),
+    this.registrationTimeout = const Duration(seconds: 12),
+  });
+  final Duration heartbeatInterval;
+  final Duration heartbeatTimeout;
+  final Duration registrationTimeout;
+  DateTime? _nextTurnRefresh;
   WebSocketChannel? _channel;
+  int _generation = 0;
+  bool _disposed = false;
+  bool _connecting = false;
+  Timer? _registrationTimer;
+  DateTime? _lastPong;
   StreamSubscription<dynamic>? _channelSub;
   String? _serverUrl;
   String? _myUserId;
@@ -51,8 +68,13 @@ class SignalingService {
   Function(PeerInfo user)? onUserJoined;
   Function(String userId)? onUserLeft;
   Function(List<PeerInfo> users)? onUserListUpdated;
-  Function(String from, String avatar, String? avatarImage,
-      Map<String, dynamic>? payload)? onCallRequest;
+  Function(
+    String from,
+    String avatar,
+    String? avatarImage,
+    Map<String, dynamic>? payload,
+  )?
+  onCallRequest;
   Function(String from)? onCallAccepted;
   Function(String from)? onCallRejected;
   Function(String from, String sdp)? onOfferReceived;
@@ -80,97 +102,103 @@ class SignalingService {
     String avatar = 'pilot',
     String? avatarImage,
   }) async {
+    if (_disposed) return;
+    if (!InputValidation.signalingUrl(url) || !InputValidation.userId(userId)) {
+      _statusController.add(SignalingStatus.error);
+      onErrorOccurred?.call('Invalid server URL or user ID');
+      return;
+    }
+    final generation = ++_generation;
     _serverUrl = url;
     _myUserId = userId;
     _myAvatar = avatar;
     _myAvatarImage = avatarImage;
     _isManualDisconnect = false;
     _reconnectTimer?.cancel();
-
+    _isReconnecting = false;
+    _connecting = true;
     _statusController.add(SignalingStatus.connecting);
-
     await _closeChannelOnly();
-
+    if (_disposed || generation != _generation) return;
     try {
-      final uri = Uri.parse(url);
-      _channel = WebSocketChannel.connect(uri);
-
-      _channelSub = _channel!.stream.listen(
+      final channel = WebSocketChannel.connect(Uri.parse(url));
+      _channel = channel;
+      // Observe ready immediately; a failed handshake must not produce an
+      // unhandled Future error alongside the stream error.
+      final ready = channel.ready.timeout(const Duration(seconds: 12));
+      _channelSub = channel.stream.listen(
         (message) {
-          _handleMessage(message.toString());
+          if (!_disposed && generation == _generation) {
+            _handleMessage(message.toString());
+          }
         },
         onDone: () {
-          _isConnected = false;
-          debugPrint('[Signaling] WebSocket connection closed.');
-          if (!_isManualDisconnect) {
-            _scheduleReconnect();
-          } else {
-            _statusController.add(SignalingStatus.disconnected);
-          }
+          if (!_disposed && generation == _generation) _scheduleReconnect();
         },
-        onError: (err) {
-          _isConnected = false;
-          debugPrint('[Signaling] WebSocket error: $err');
-          if (!_isManualDisconnect) {
-            _scheduleReconnect();
-          } else {
-            _statusController.add(SignalingStatus.error);
-            onErrorOccurred?.call('WebSocket error: $err');
-          }
+        onError: (Object error) {
+          if (!_disposed && generation == _generation) _scheduleReconnect();
         },
         cancelOnError: true,
       );
-
-      // Send registration message; 'connected' status is only emitted once the
-      // server acknowledges with 'registered'.
+      await ready;
+      if (_disposed || generation != _generation || _isManualDisconnect) return;
       _registrationPending = true;
-      final sent = _send({
+      _send({
         'type': 'register',
         'userId': _myUserId,
         'avatar': _myAvatar,
-        if (_myAvatarImage != null && _myAvatarImage!.isNotEmpty)
-          'avatarImage': _myAvatarImage,
+        if (_myAvatarImage?.isNotEmpty == true) 'avatarImage': _myAvatarImage,
         if (_authToken != null) 'token': _authToken,
       });
-      if (!sent) {
-        _registrationPending = false;
-        throw StateError('Failed to send registration message');
-      }
-    } catch (e) {
-      _isConnected = false;
-      _registrationPending = false;
-      if (!_isManualDisconnect) {
-        _scheduleReconnect();
-      } else {
-        _statusController.add(SignalingStatus.error);
-        onErrorOccurred?.call('Connection failed: $e');
-      }
+      _registrationTimer = Timer(registrationTimeout, () {
+        if (!_disposed && generation == _generation && _registrationPending) {
+          _scheduleReconnect();
+        }
+      });
+    } catch (error) {
+      if (!_disposed && generation == _generation) _scheduleReconnect();
     }
   }
 
   void _scheduleReconnect() {
-    if (_isManualDisconnect || _isReconnecting) return;
+    if (_disposed || _isManualDisconnect || _isReconnecting) return;
+    _generation++;
+    unawaited(_closeChannelOnly());
+    _isConnected = false;
+    _connecting = false;
+    _registrationPending = false;
+    _registrationTimer?.cancel();
+    _heartbeatTimer?.cancel();
     _isReconnecting = true;
     _statusController.add(SignalingStatus.reconnecting);
 
-    _reconnectAttempts++;
+    _reconnectAttempts = min(_reconnectAttempts + 1, 5);
     // Exponential backoff capped at 30 seconds.
     final delaySec = min(30, max(1, pow(2, _reconnectAttempts).toInt()));
     debugPrint(
-        '[Signaling] Network switched or lost. Auto-reconnecting in $delaySec s '
-        '(attempt $_reconnectAttempts)...');
+      '[Signaling] Network switched or lost. Auto-reconnecting in $delaySec s '
+      '(attempt $_reconnectAttempts)...',
+    );
 
     _reconnectTimer?.cancel();
     _reconnectTimer = Timer(Duration(seconds: delaySec), () {
       _isReconnecting = false;
       if (!_isManualDisconnect && _serverUrl != null && _myUserId != null) {
-        connect(_serverUrl!, _myUserId!,
-            avatar: _myAvatar, avatarImage: _myAvatarImage);
+        connect(
+          _serverUrl!,
+          _myUserId!,
+          avatar: _myAvatar,
+          avatarImage: _myAvatarImage,
+        );
       }
     });
   }
 
-  void updateProfile({String? newUserId, String? newAvatar, String? newAvatarImage}) {
+  void updateProfile({
+    String? newUserId,
+    String? newAvatar,
+    String? newAvatarImage,
+  }) {
     if (newUserId != null && newUserId.trim().isNotEmpty) {
       _myUserId = newUserId.trim();
     }
@@ -200,27 +228,15 @@ class SignalingService {
 
   bool sendCallRequest(String targetUserId) {
     if (!_isConnected) return false;
-    return _send({
-      'type': 'call_request',
-      'to': targetUserId,
-      'payload': {},
-    });
+    return _send({'type': 'call_request', 'to': targetUserId, 'payload': {}});
   }
 
   void sendCallAccept(String targetUserId) {
-    _send({
-      'type': 'call_accepted',
-      'to': targetUserId,
-      'payload': {},
-    });
+    _send({'type': 'call_accepted', 'to': targetUserId, 'payload': {}});
   }
 
   void sendCallReject(String targetUserId) {
-    _send({
-      'type': 'call_rejected',
-      'to': targetUserId,
-      'payload': {},
-    });
+    _send({'type': 'call_rejected', 'to': targetUserId, 'payload': {}});
   }
 
   void sendOffer(String targetUserId, String sdp) {
@@ -240,19 +256,11 @@ class SignalingService {
   }
 
   void sendIceCandidate(String targetUserId, Map<String, dynamic> candidate) {
-    _send({
-      'type': 'ice_candidate',
-      'to': targetUserId,
-      'payload': candidate,
-    });
+    _send({'type': 'ice_candidate', 'to': targetUserId, 'payload': candidate});
   }
 
   void sendHangup(String targetUserId) {
-    _send({
-      'type': 'hangup',
-      'to': targetUserId,
-      'payload': {},
-    });
+    _send({'type': 'hangup', 'to': targetUserId, 'payload': {}});
   }
 
   bool _send(Map<String, dynamic> data) {
@@ -273,11 +281,13 @@ class SignalingService {
     final List<PeerInfo> result = [];
     for (final item in rawList) {
       if (item is Map) {
-        result.add(PeerInfo(
-          userId: item['userId']?.toString() ?? '',
-          avatar: item['avatar']?.toString() ?? 'pilot',
-          avatarImage: item['avatarImage']?.toString(),
-        ));
+        result.add(
+          PeerInfo(
+            userId: item['userId']?.toString() ?? '',
+            avatar: item['avatar']?.toString() ?? 'pilot',
+            avatarImage: item['avatarImage']?.toString(),
+          ),
+        );
       } else if (item is String) {
         result.add(PeerInfo(userId: item, avatar: 'pilot'));
       }
@@ -296,6 +306,9 @@ class SignalingService {
 
       switch (type) {
         case 'registered':
+          _registrationTimer?.cancel();
+          _connecting = false;
+          _lastPong = DateTime.now();
           _registrationPending = false;
           _isConnected = true;
           _reconnectAttempts = 0;
@@ -309,15 +322,17 @@ class SignalingService {
           break;
 
         case 'pong':
-          // Keep-alive heartbeat acknowledged by signaling server
+          _lastPong = DateTime.now();
           break;
 
         case 'user_joined':
-          onUserJoined?.call(PeerInfo(
-            userId: data['userId']?.toString() ?? '',
-            avatar: data['avatar']?.toString() ?? 'pilot',
-            avatarImage: data['avatarImage']?.toString(),
-          ));
+          onUserJoined?.call(
+            PeerInfo(
+              userId: data['userId']?.toString() ?? '',
+              avatar: data['avatar']?.toString() ?? 'pilot',
+              avatarImage: data['avatarImage']?.toString(),
+            ),
+          );
           break;
 
         case 'user_left':
@@ -371,15 +386,25 @@ class SignalingService {
           break;
 
         case 'turn_config':
-          onTurnConfig?.call(data['turn'] as Map<String, dynamic>?);
+          final turn = data['turn'] as Map<String, dynamic>?;
+          final ttl = turn?['ttl'];
+          _nextTurnRefresh = ttl is num
+              ? DateTime.now().add(
+                  Duration(seconds: max(1, (ttl * .8).floor())),
+                )
+              : null;
+          onTurnConfig?.call(turn);
+          break;
+
+        case 'conflict':
+          _stopRetrying();
+          onErrorOccurred?.call('identityConflict');
           break;
 
         case 'error':
           final errMsg = data['message']?.toString() ?? 'Unknown error';
           if (_registrationPending) {
-            _registrationPending = false;
-            _isConnected = false;
-            _statusController.add(SignalingStatus.error);
+            _stopRetrying();
           }
           onErrorOccurred?.call(errMsg);
           break;
@@ -389,44 +414,75 @@ class SignalingService {
     }
   }
 
+  void _stopRetrying() {
+    _isManualDisconnect = true;
+    _generation++;
+    _connecting = false;
+    _isConnected = false;
+    _registrationPending = false;
+    _isReconnecting = false;
+    _registrationTimer?.cancel();
+    _reconnectTimer?.cancel();
+    _heartbeatTimer?.cancel();
+    unawaited(_closeChannelOnly());
+    _statusController.add(SignalingStatus.error);
+  }
+
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 15), (timer) {
-      if (_isConnected) {
-        final sent = _send({'type': 'ping'});
-        if (!sent) {
-          _scheduleReconnect();
-        }
-      } else if (!_isManualDisconnect && _serverUrl != null && _myUserId != null) {
-        checkAndReconnect();
+    _heartbeatTimer = Timer.periodic(heartbeatInterval, (_) {
+      if (!_isConnected) return;
+      if (_lastPong == null ||
+          DateTime.now().difference(_lastPong!) > heartbeatTimeout) {
+        _scheduleReconnect();
+        return;
+      }
+      if (!_send({'type': 'ping'})) _scheduleReconnect();
+      if (_nextTurnRefresh != null &&
+          DateTime.now().isAfter(_nextTurnRefresh!)) {
+        _nextTurnRefresh = DateTime.now().add(const Duration(minutes: 1));
+        _send({'type': 'get_turn'});
       }
     });
   }
 
   void checkAndReconnect() {
-    if (!_isConnected &&
+    if (!_disposed &&
+        !_connecting &&
+        !_isReconnecting &&
+        !_isConnected &&
         !_isManualDisconnect &&
         _serverUrl != null &&
         _myUserId != null) {
-      connect(_serverUrl!, _myUserId!,
-          avatar: _myAvatar, avatarImage: _myAvatarImage);
+      connect(
+        _serverUrl!,
+        _myUserId!,
+        avatar: _myAvatar,
+        avatarImage: _myAvatarImage,
+      );
     }
   }
 
   Future<void> _closeChannelOnly() async {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = null;
-    await _channelSub?.cancel();
+    _registrationTimer?.cancel();
+    final sub = _channelSub;
+    final channel = _channel;
     _channelSub = null;
-    try {
-      await _channel?.sink.close();
-    } catch (_) {}
     _channel = null;
     _isConnected = false;
+    try {
+      await sub?.cancel();
+    } catch (_) {}
+    try {
+      await channel?.sink.close().timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   Future<void> disconnect() async {
     _isManualDisconnect = true;
+    _generation++;
+    _connecting = false;
     _reconnectTimer?.cancel();
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
@@ -440,7 +496,9 @@ class SignalingService {
   }
 
   Future<void> dispose() async {
+    if (_disposed) return;
     await disconnect();
+    _disposed = true;
     await _statusController.close();
   }
 }

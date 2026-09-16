@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:flutter/material.dart';
+
 import '../../models/avatar_model.dart';
 
 /// A reusable circular avatar used across the identity card, peer list,
@@ -25,7 +27,8 @@ class AvatarCircle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final hasLocalImage = avatar.imagePath != null &&
+    final hasLocalImage =
+        avatar.imagePath != null &&
         avatar.imagePath!.isNotEmpty &&
         File(avatar.imagePath!).existsSync();
     final hasRemoteImage =
@@ -38,8 +41,10 @@ class AvatarCircle extends StatelessWidget {
         width: size,
         height: size,
         fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) =>
-            Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52)),
+        errorBuilder: (context, error, stackTrace) => Text(
+          avatar.emoji,
+          style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+        ),
       );
     } else if (hasRemoteImage) {
       try {
@@ -49,14 +54,22 @@ class AvatarCircle extends StatelessWidget {
           width: size,
           height: size,
           fit: BoxFit.cover,
-          errorBuilder: (context, error, stackTrace) =>
-              Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52)),
+          errorBuilder: (context, error, stackTrace) => Text(
+            avatar.emoji,
+            style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+          ),
         );
       } catch (_) {
-        avatarContent = Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52));
+        avatarContent = Text(
+          avatar.emoji,
+          style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+        );
       }
     } else {
-      avatarContent = Text(avatar.emoji, style: TextStyle(fontSize: emojiSize ?? size * 0.52));
+      avatarContent = Text(
+        avatar.emoji,
+        style: TextStyle(fontSize: emojiSize ?? size * 0.52),
+      );
     }
 
     final circle = Container(

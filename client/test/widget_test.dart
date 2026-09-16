@@ -8,13 +8,22 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test('AppLocalizations resolves each supported language', () {
-    expect(AppLocalizations(const Locale('en')).headerTitle, 'P2P Direct Voice');
+    expect(
+      AppLocalizations(const Locale('en')).headerTitle,
+      'P2P Direct Voice',
+    );
     expect(AppLocalizations(const Locale('zh')).headerTitle, 'P2P 语音直通');
-    expect(AppLocalizations(const Locale('fr')).headerTitle, 'Voix directe P2P');
+    expect(
+      AppLocalizations(const Locale('fr')).headerTitle,
+      'Voix directe P2P',
+    );
   });
 
   test('AppLocalizations falls back to English for unsupported languages', () {
-    expect(AppLocalizations(const Locale('de')).headerTitle, 'P2P Direct Voice');
+    expect(
+      AppLocalizations(const Locale('de')).headerTitle,
+      'P2P Direct Voice',
+    );
     expect(AppLocalizations(const Locale('en')).avatarName('pilot'), 'Pilot');
     expect(AppLocalizations(const Locale('zh')).avatarName('pilot'), '领航员');
   });
@@ -39,8 +48,7 @@ void main() {
           GlobalCupertinoLocalizations.delegate,
         ],
         home: Builder(
-          builder: (context) =>
-              Text(AppLocalizations.of(context)!.headerTitle),
+          builder: (context) => Text(AppLocalizations.of(context)!.headerTitle),
         ),
       ),
     );

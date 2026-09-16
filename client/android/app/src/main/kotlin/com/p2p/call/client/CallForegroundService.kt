@@ -13,6 +13,7 @@ import android.media.RingtoneManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class CallForegroundService : Service() {
@@ -49,47 +50,65 @@ class CallForegroundService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null) return START_STICKY
+        if (intent == null) {
+            // A recreated service has no Dart call session to resume.
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
-        when (intent.action) {
-            ACTION_START_KEEPALIVE -> {
-                isKeepAliveActive = true
-                startKeepAliveForeground()
-                acquireWakeLock()
-            }
-            ACTION_START_CALL -> {
-                val peerId = intent.getStringExtra(EXTRA_PEER_ID) ?: "对端用户"
-                cancelIncomingNotification()
-                startCallForeground(peerId)
-                acquireWakeLock()
-            }
-            ACTION_STOP_CALL -> {
-                cancelIncomingNotification()
-                if (isKeepAliveActive) {
+        try {
+            when (intent.action) {
+                ACTION_START_KEEPALIVE -> {
+                    isKeepAliveActive = true
                     startKeepAliveForeground()
-                } else {
+                    acquireWakeLock()
+                }
+                ACTION_START_CALL -> {
+                    val peerId = intent.getStringExtra(EXTRA_PEER_ID) ?: "对端用户"
+                    cancelIncomingNotification()
+                    startCallForeground(peerId)
+                    acquireWakeLock()
+                }
+                ACTION_STOP_CALL -> {
+                    cancelIncomingNotification()
+                    if (isKeepAliveActive) {
+                        startKeepAliveForeground()
+                    } else {
+                        releaseWakeLock()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+                ACTION_SHOW_INCOMING -> {
+                    if (!isKeepAliveActive) {
+                        startKeepAliveForeground()
+                        isKeepAliveActive = true
+                    }
+                    val callerId = intent.getStringExtra(EXTRA_PEER_ID) ?: "未知来电用户"
+                    showIncomingCallNotification(callerId)
+                    acquireWakeLock()
+                }
+                ACTION_CANCEL_INCOMING -> {
+                    cancelIncomingNotification()
+                }
+                ACTION_STOP_ALL -> {
+                    isKeepAliveActive = false
+                    cancelIncomingNotification()
                     releaseWakeLock()
                     stopForeground(STOP_FOREGROUND_REMOVE)
                     stopSelf()
                 }
             }
-            ACTION_SHOW_INCOMING -> {
-                val callerId = intent.getStringExtra(EXTRA_PEER_ID) ?: "未知来电用户"
-                showIncomingCallNotification(callerId)
-                acquireWakeLock()
-            }
-            ACTION_CANCEL_INCOMING -> {
-                cancelIncomingNotification()
-            }
-            ACTION_STOP_ALL -> {
-                isKeepAliveActive = false
-                cancelIncomingNotification()
-                releaseWakeLock()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-            }
-        }
 
+        } catch (error: RuntimeException) {
+            // Never retry with all manifest types: that can accidentally request
+            // microphone access when starting a keep-alive notification.
+            Log.w("P2PCallService", "Foreground service unavailable", error)
+            isKeepAliveActive = false
+            releaseWakeLock()
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
@@ -118,19 +137,7 @@ class CallForegroundService : Service() {
             .build()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    startForeground(
-                        NOTIFICATION_ID,
-                        notification,
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-                    )
-                } else {
-                    startForeground(NOTIFICATION_ID, notification)
-                }
-            } catch (e: Exception) {
-                startForeground(NOTIFICATION_ID, notification)
-            }
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -310,6 +317,16 @@ class CallForegroundService : Service() {
             }
             manager.createNotificationChannel(incomingChannel)
         }
+    }
+
+    // Android 15 limits dataSync foreground time. Stop promptly instead of
+    // leaving a timed-out service running until Android terminates the app.
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        isKeepAliveActive = false
+        cancelIncomingNotification()
+        releaseWakeLock()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
     }
 
     override fun onDestroy() {

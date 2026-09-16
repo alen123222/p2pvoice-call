@@ -1,14 +1,19 @@
 import 'dart:io';
+
 import 'package:flutter/services.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 class ForegroundServiceManager {
-  static const MethodChannel _channel =
-      MethodChannel('com.p2p.call.client/foreground_service');
+  static const MethodChannel _channel = MethodChannel(
+    'com.p2p.call.client/foreground_service',
+  );
 
   static Function(String action, String peerId)? onCallAction;
 
   /// Initializes MethodChannel listener for incoming notification actions (Answer / Reject).
-  static void initialize({Function(String action, String peerId)? handleCallAction}) {
+  static void initialize({
+    Function(String action, String peerId)? handleCallAction,
+  }) {
     if (!Platform.isAndroid) return;
     onCallAction = handleCallAction;
 
@@ -26,8 +31,9 @@ class ForegroundServiceManager {
   static Future<void> _checkInitialAction() async {
     if (!Platform.isAndroid) return;
     try {
-      final initialAction =
-          await _channel.invokeMapMethod<String, dynamic>('getInitialCallAction');
+      final initialAction = await _channel.invokeMapMethod<String, dynamic>(
+        'getInitialCallAction',
+      );
       if (initialAction != null) {
         final action = initialAction['action'] as String? ?? '';
         final peerId = initialAction['peerId'] as String? ?? '';
@@ -35,6 +41,15 @@ class ForegroundServiceManager {
           onCallAction?.call(action, peerId);
         }
       }
+    } catch (_) {}
+  }
+
+  /// Notifications are requested independently from microphone access. Audio
+  /// permission is only requested when a call is accepted.
+  static Future<void> prepareNotifications() async {
+    if (!Platform.isAndroid) return;
+    try {
+      await Permission.notification.request();
     } catch (_) {}
   }
 

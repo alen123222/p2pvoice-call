@@ -40,12 +40,32 @@ flutter build ios --release      # iOS（需 macOS + Xcode）
 
 ## 项目结构
 
+- `controllers/call_controller.dart`：身份、偏好、在线设备、计时和通知协调。
+- `services/webrtc_service.dart`：通话状态转换、SDP/ICE、媒体生命周期与音频控制。
+- `services/signaling_service.dart`：WebSocket 注册、心跳、重连与消息路由。
+- `ui/home_page.dart`：响应式身份卡、拨号和在线设备。
+- `ui/call_view.dart`：来电与通话界面。
+- `ui/settings_page.dart`、`ui/profile_sheet.dart`：网络、外观和个人资料编辑。
+- `theme/app_theme.dart`：Material 3 明暗主题和四种配色。
+- `models/input_validation.dart`：与服务端一致的身份校验及网络地址校验。
+
+## 验证
+
+```bash
+flutter analyze --no-pub
+flutter test --no-pub
+flutter build apk --debug --no-pub
 ```
-lib/
-  l10n/                本地化（AppLocalizations）
-  models/              AvatarItem / CallStatus / SignalingStatus
-  services/            SignalingService / WebRTCService / ForegroundServiceManager
-  theme/               主题与语义色令牌
-  ui/                  页面与可复用组件（AvatarCircle 等）
-  main.dart            应用入口（异步初始化、多语言/主题装配）
-```
+
+服务端运行 `node server/test_signaling.js`（在仓库根目录）。
+测试使用本地临时信令服务器，不连接部署服务器。
+
+设置 `SAVE_UI_PREVIEWS=1` 后运行布局测试，可将真实 Flutter widget 的渲染截图
+输出到仓库 `artifacts/`。测试状态由替身服务提供，截图不代表真实通话验证；
+Windows 截图优先加载系统中文和 emoji 字体。
+
+## 平台边界
+
+Android 保留前台服务和来电通知；麦克风权限仅在通话协商时请求。
+iOS 的后台来电推送 / CallKit 未实现，不能承诺应用被系统挂起或杀死后仍可收到来电。
+Android 长期后台在线同样受系统限制，详见根目录 `REFACTOR_NOTES.md`。

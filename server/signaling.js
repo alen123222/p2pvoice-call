@@ -128,12 +128,21 @@ wss.on('connection', (ws, req) => {
       return;
     }
 
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Expected a message object' }));
+      return;
+    }
     const { type, to, payload } = data;
+    if (!['register', 'ping', 'unregister'].includes(type) &&
+        (!currentUserId || clients.get(currentUserId)?.ws !== ws)) {
+      ws.send(JSON.stringify({ type: 'error', message: 'Not registered' }));
+      return;
+    }
 
     switch (type) {
       // 1. User registers their ID and avatar on the signaling server
       case 'register': {
-        const userId = data.userId?.trim();
+        const userId = typeof data.userId === 'string' ? data.userId.trim() : null;
         const avatar = isValidAvatar(data.avatar) ? data.avatar : 'pilot';
         const avatarImage = sanitizeAvatarImage(data.avatarImage);
 
@@ -148,7 +157,7 @@ wss.on('connection', (ws, req) => {
         }
 
         // Clean up previous userId on the same connection if renamed
-        if (currentUserId && currentUserId !== userId) {
+        if (currentUserId && currentUserId !== userId && clients.get(currentUserId)?.ws === ws) {
           const previousEntry = clients.get(currentUserId);
           clients.delete(currentUserId);
           broadcastUserStatus(currentUserId, false, previousEntry);
@@ -188,7 +197,7 @@ wss.on('connection', (ws, req) => {
 
       // 2. Explicit unregister
       case 'unregister': {
-        if (currentUserId && clients.has(currentUserId)) {
+        if (currentUserId && clients.get(currentUserId)?.ws === ws) {
           const entry = clients.get(currentUserId);
           clients.delete(currentUserId);
           console.log(`[Signaling] User "${currentUserId}" unregistered`);
@@ -231,6 +240,19 @@ wss.on('connection', (ws, req) => {
           return;
         }
 
+        if (to === currentUserId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Cannot call yourself' }));
+          return;
+        }
+        if (['offer', 'answer'].includes(type) &&
+            (!payload || typeof payload.sdp !== 'string' || !payload.sdp.trim())) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid SDP payload' }));
+          return;
+        }
+        if (type === 'ice_candidate' && (!payload || typeof payload.candidate !== 'string')) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid ICE payload' }));
+          return;
+        }
         const targetEntry = clients.get(to);
         if (targetEntry && targetEntry.ws.readyState === WebSocket.OPEN) {
           const sender = clients.get(currentUserId);
@@ -266,7 +288,7 @@ wss.on('connection', (ws, req) => {
   });
 
   ws.on('close', () => {
-    if (currentUserId && clients.has(currentUserId)) {
+    if (currentUserId && clients.get(currentUserId)?.ws === ws) {
       const entry = clients.get(currentUserId);
       if (entry && entry.ws === ws) {
         clients.delete(currentUserId);
