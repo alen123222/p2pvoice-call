@@ -10,10 +10,10 @@ final currentThemeTypeNotifier = ValueNotifier<AppThemeType>(
 
 abstract final class AppTheme {
   static Color seedFor(AppThemeType type) => switch (type) {
-    AppThemeType.sakuraSmoke => const Color(0xFFE84E8A),
-    AppThemeType.cloudRiver => const Color(0xFF1692D0),
-    AppThemeType.roseAmber => const Color(0xFFE07A28),
-    AppThemeType.teaFluo => const Color(0xFF1EB57D),
+    AppThemeType.sakuraSmoke => const Color(0xFFFF2D78),
+    AppThemeType.cloudRiver => const Color(0xFF00A3FF),
+    AppThemeType.roseAmber => const Color(0xFFFF8800),
+    AppThemeType.teaFluo => const Color(0xFF00E599),
   };
 
   static ThemeData getTheme(
@@ -31,44 +31,44 @@ abstract final class AppTheme {
       lightSurface,
     ) = switch (themeType) {
       AppThemeType.sakuraSmoke => (
-        const Color(0xFFE84E8A),
-        const Color(0xFFC04B76),
-        const Color(0xFFF075AA),
-        const Color(0xFF160A13),
-        const Color(0xFF261220),
-        const Color(0xFF33182A),
-        const Color(0xFFFDF2F6),
+        const Color(0xFFFF2D78),
+        const Color(0xFFFA4D8C),
+        const Color(0xFFFF6EA7),
+        const Color(0xFF160813),
+        const Color(0xFF251021),
+        const Color(0xFF351730),
+        const Color(0xFFFFF0F5),
         const Color(0xFFFFF7FA),
       ),
       AppThemeType.cloudRiver => (
-        const Color(0xFF1692D0),
-        const Color(0xFF2275A0),
-        const Color(0xFF56B4E9),
-        const Color(0xFF09131C),
-        const Color(0xFF10202F),
-        const Color(0xFF172D42),
-        const Color(0xFFF0F6FC),
-        const Color(0xFFF7FAFD),
+        const Color(0xFF00A3FF),
+        const Color(0xFF0284C7),
+        const Color(0xFF38BDF8),
+        const Color(0xFF071320),
+        const Color(0xFF0E2034),
+        const Color(0xFF162F4D),
+        const Color(0xFFF0F7FF),
+        const Color(0xFFF8FBFF),
       ),
       AppThemeType.roseAmber => (
-        const Color(0xFFE07A28),
-        const Color(0xFFAB5E22),
-        const Color(0xFFF39C4B),
-        const Color(0xFF181109),
-        const Color(0xFF281C11),
-        const Color(0xFF392718),
-        const Color(0xFFFCF5EE),
-        const Color(0xFFFFFBF7),
+        const Color(0xFFFF8800),
+        const Color(0xFFF59E0B),
+        const Color(0xFFFBBF24),
+        const Color(0xFF180E06),
+        const Color(0xFF29180C),
+        const Color(0xFF3D2413),
+        const Color(0xFFFFF8F0),
+        const Color(0xFFFFFDF8),
       ),
       AppThemeType.teaFluo => (
-        const Color(0xFF1EB57D),
-        const Color(0xFF228761),
-        const Color(0xFF45D59E),
-        const Color(0xFF091611),
-        const Color(0xFF10241C),
-        const Color(0xFF183327),
-        const Color(0xFFEFF8F3),
-        const Color(0xFFF6FAF8),
+        const Color(0xFF00E599),
+        const Color(0xFF10B981),
+        const Color(0xFF34D399),
+        const Color(0xFF06160F),
+        const Color(0xFF0D241A),
+        const Color(0xFF143526),
+        const Color(0xFFF0FDF5),
+        const Color(0xFFF8FEFA),
       ),
     };
 
@@ -77,13 +77,22 @@ abstract final class AppTheme {
       brightness: isDark ? Brightness.dark : Brightness.light,
     ).copyWith(
       primary: seed,
+      onPrimary: (themeType == AppThemeType.teaFluo && isDark)
+          ? const Color(0xFF032213)
+          : Colors.white,
+      primaryContainer: isDark
+          ? seed.withValues(alpha: 0.24)
+          : seed.withValues(alpha: 0.14),
+      onPrimaryContainer: isDark ? seed : seed,
       secondary: secondary,
       tertiary: tertiary,
       surface: isDark ? darkSurface : lightSurface,
+      onSurface: isDark ? const Color(0xFFF9FAFB) : const Color(0xFF111827),
+      onSurfaceVariant: isDark ? const Color(0xFF9CA3AF) : const Color(0xFF4B5563),
       surfaceContainer: isDark ? darkSurfaceContainer : lightSurface,
       surfaceContainerHigh: isDark ? darkSurfaceContainer : lightSurface,
       surfaceContainerHighest:
-          isDark ? darkSurfaceContainer : const Color(0xFFE6EAE7),
+          isDark ? darkSurfaceContainer : const Color(0xFFECEFF1),
     );
 
     final base = ThemeData(useMaterial3: true, colorScheme: scheme);
@@ -110,6 +119,7 @@ abstract final class AppTheme {
         surfaceTintColor: Colors.transparent,
         foregroundColor: scheme.onSurface,
         elevation: 0,
+        scrolledUnderElevation: 0,
         centerTitle: false,
       ),
       inputDecorationTheme: InputDecorationTheme(
@@ -148,13 +158,33 @@ abstract final class AppTheme {
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
           backgroundColor: scheme.primary,
-          foregroundColor: Colors.white,
+          foregroundColor: (themeType == AppThemeType.teaFluo && isDark)
+              ? const Color(0xFF032213)
+              : Colors.white,
           minimumSize: const Size(48, 54),
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(16),
           ),
           elevation: 0,
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          minimumSize: const Size(44, 48),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          side: BorderSide(
+            color: scheme.primary.withValues(alpha: isDark ? 0.35 : 0.45),
+          ),
+        ),
+      ),
+      textButtonTheme: TextButtonThemeData(
+        style: TextButton.styleFrom(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
         ),
       ),
       snackBarTheme: const SnackBarThemeData(

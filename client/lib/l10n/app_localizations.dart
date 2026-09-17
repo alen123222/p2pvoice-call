@@ -307,7 +307,7 @@ class AppLocalizations {
       'theme_sakuraSmoke': '柔樱',
       'theme_cloudRiver': '晴川',
       'theme_roseAmber': '琥珀',
-      'theme_teaFluo': '茶绿',
+      'theme_teaFluo': '极光翡翠',
 
       'appTitle': 'P2P 语音通话',
       'headerTitle': 'P2P 语音直通',
@@ -315,7 +315,7 @@ class AppLocalizations {
       'statusConnecting': '连接中',
       'statusReconnecting': '自动重连中',
       'statusOffline': '未连信令',
-      'tooltipLightTheme': '切换为天蓝浅色主题',
+      'tooltipLightTheme': '切换为浅色主题',
       'tooltipDarkTheme': '切换为深色主题',
       'tooltipSettings': '网络与服务器设置',
       'tooltipCopy': '复制 ID',
